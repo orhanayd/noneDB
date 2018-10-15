@@ -4,6 +4,8 @@
 // but every data is important for us <3 
 // created with love <3  || ORHAN AYDOGDU || www.orhanaydogdu.com.tr || info@orhanaydogdu.com.tr
 
+$noneDB_version="0.1";
+
 /////////////--- DB CONFIG ---\\\\\\\\\\\\\
 //secret key
 $noneDB_secretKey="a015852";

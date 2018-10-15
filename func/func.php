@@ -43,20 +43,42 @@ function noneDB_hashCreate($arg){
     return hash_pbkdf2("sha256", $arg, $noneDB_secretKey, 1000, 20);
 }
 
-function noneDB_checkDB($db){
+function noneDB_checkDB($arg){
     global $noneDB_secretKey;
     $prefix=noneDB_hashCreate($noneDB_secretKey);
-    $dbFile=noneDB_hashCreate($db);
+    $dbFile=noneDB_hashCreate($arg);
     if(file_exists("data/".$prefix."_".$dbFile.".json")){
         return true;
+    }else{
+        return false;
     }
-    return false;
 }
 
 function noneDB_createDB($arg){
-    global $noneDB_secretKey;
-    $prefix=noneDB_hashCreate($noneDB_secretKey);
-    $dbFile = fopen('data/'.$prefix.'_'.noneDB_createDB($arg).'.json', 'w');
-    fclose($dbFile);
+    if(!noneDB_checkDB($arg)){
+        global $noneDB_secretKey;
+        global $noneDB_version;
+        $prefix=noneDB_hashCreate($noneDB_secretKey);
+        $time=time();
+        $dbRaw=array(
+            "config"=>array(
+               "dbName"=>$arg, "version"=>$noneDB_version, "createdDate"=>$time
+            ),
+            "data"=>array()
+        );
+        $dbFile = fopen('data/'.$prefix.'_'.noneDB_hashCreate($arg).'.json', 'w');
+        fwrite($dbFile, json_encode($dbRaw));
+        fclose($dbFile);
+        return true;
+    }else{
+        return false;
+    }
+}
+
+function noneDB_insert($arg){
+    $insertData=[];
+    array_push($insertData, $arg);
+    var_dump($arg);
+    return false;
 }
 ?>
