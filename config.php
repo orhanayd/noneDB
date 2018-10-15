@@ -8,16 +8,16 @@
 //secret key
 $noneDB_secretKey="a015852";
 
-// if you change to true, your request data is not secure maybe stolenable
+// if you change to true all request will show in the api and your request data is not secure and maybe stolenable,  we recommend this variable set to false
 $noneDB_requestShow=true; 
 
-// if requestShow is true we recommend this variable set to false because your secretKey maybe stolenable. 
+// if requestShow is true your secretKey maybe stolenable. we recommend this variable set to false for secure your data
 $noneDB_secretKeyShow=false; 
 
-// if showDataField is true your data field is not secure maybe stolenable
+// if showDataField is true your data field is not secure and maybe stolenable, we recommend this variable set to false
 $noneDB_showDataField=false;
 
-// if showDBField is true your db information field is not secure maybe stolenable
+// if showDBField is true your db information field will show in the api and is not secure true option maybe stolenable, we recommend this variable set to false
 $noneDB_showDBField=false;
 
 // api on/off || if api is true please use `type=api` get parameter
