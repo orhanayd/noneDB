@@ -8,7 +8,7 @@ if(isset($_POST['noneDB_secretKey']) && $_POST['noneDB_secretKey']!=null && $non
     if(isset($_POST['noneDB_db']) && $_POST['noneDB_db']!=null){
         if(isset($_POST['noneDB_data']) && $_POST['noneDB_data']!=null){
             if(noneDB_checkDB($_POST['noneDB_db'])){
-                if(noneDB_insert($_POST['noneDB_data'])){
+                if(noneDB_insert($_POST['noneDB_data'], $_POST['noneDB_db'])){
                     $noneDB_jsonData=json_encode(noneDB_resultFunc(true, "inserted"));
                 }else{
                     $noneDB_jsonData=json_encode(noneDB_resultFunc(true, "insert failed"));
@@ -17,7 +17,7 @@ if(isset($_POST['noneDB_secretKey']) && $_POST['noneDB_secretKey']!=null && $non
                 if($noneDB_autoCreate){
                     // TODO
                     if(noneDB_createDB($_POST['noneDB_db'])){
-                        if(noneDB_insert($_POST['noneDB_data'])){
+                        if(noneDB_insert($_POST['noneDB_data'], $_POST['noneDB_db'])){
                             $noneDB_jsonData=json_encode(noneDB_resultFunc(true, "inserted"));
                         }else{
                             $noneDB_jsonData=json_encode(noneDB_resultFunc(true, "insert failed"));

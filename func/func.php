@@ -75,10 +75,15 @@ function noneDB_createDB($arg){
     }
 }
 
-function noneDB_insert($arg){
-    $insertData=[];
-    array_push($insertData, $arg);
-    var_dump($arg);
-    return false;
+function noneDB_insert($data, $db){
+    global $noneDB_secretKey;
+    global $noneDB_version;
+    $prefix=noneDB_hashCreate($noneDB_secretKey);
+    $dbFile=noneDB_hashCreate($db);
+    $handle = fopen('data/'.$prefix.'_'.$dbFile.'.json', "r");
+    $contents = json_decode(fread($handle, filesize('data/'.$prefix.'_'.$dbFile.'.json')));
+    fclose($handle);
+    array_push($contents->data, $arg);
+    return true;
 }
 ?>
