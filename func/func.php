@@ -83,7 +83,7 @@ function noneDB_insert($data, $db){
     $handle = fopen('data/'.$prefix.'_'.$dbFile.'.json', "r");
     $contents = json_decode(fread($handle, filesize('data/'.$prefix.'_'.$dbFile.'.json')));
     fclose($handle);
-    array_push($contents->data, $arg);
+    array_push($contents->data, $data);
     return true;
 }
 ?>
