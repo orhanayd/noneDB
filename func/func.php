@@ -78,12 +78,30 @@ function noneDB_createDB($arg){
 function noneDB_insert($data, $db){
     global $noneDB_secretKey;
     global $noneDB_version;
+    $millisecond=round(microtime(true) * 1000);
     $prefix=noneDB_hashCreate($noneDB_secretKey);
     $dbFile=noneDB_hashCreate($db);
     $handle = fopen('data/'.$prefix.'_'.$dbFile.'.json', "r");
     $contents = json_decode(fread($handle, filesize('data/'.$prefix.'_'.$dbFile.'.json')));
     fclose($handle);
-    array_push($contents->data, $data);
+    $dataDB=$contents->data;
+    $config=$contents->config;
+    var_dump($data);
+    ////
+    $newInsert=array(
+        "insertID"=>$millisecond
+    );
+    array_push($data, $newInsert);
+    array_push($dataDB, $data);
+    ////
+
+    $dbRaw=array(
+        "config"=>$config,
+        "data"=>$dataDB
+    );
+    $dbFile = fopen('data/'.$prefix.'_'.$dbFile.'.json', 'w');
+    fwrite($dbFile, json_encode($dbRaw));
+    fclose($dbFile);
     return true;
 }
 ?>
