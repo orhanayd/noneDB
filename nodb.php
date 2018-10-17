@@ -39,10 +39,10 @@ if(isset($_POST['noneDB_secretKey']) && $_POST['noneDB_secretKey']!=null && $non
 
 }else{
 
-    if($_POST['noneDB_secretKey']!=null){
+    if(isset($_POST['noneDB_secretKey']) && $_POST['noneDB_secretKey']!=null){
         $result="Please set the secret key, we recommended read the documentation.";
     }
-    if($noneDB_secretKey!=$_POST['noneDB_secretKey']){
+    if(isset($_POST['noneDB_secretKey']) && $noneDB_secretKey!=$_POST['noneDB_secretKey']){
         $result="Secret key does not match.";
     }
     if(!isset($_POST['noneDB_secretKey'])){
