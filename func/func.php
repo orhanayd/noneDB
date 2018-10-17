@@ -45,9 +45,10 @@ function noneDB_hashCreate($arg){
 
 function noneDB_checkDB($arg){
     global $noneDB_secretKey;
+    global $noneDB_dbFolder;
     $prefix=noneDB_hashCreate($noneDB_secretKey);
     $dbFile=noneDB_hashCreate($arg);
-    if(file_exists("data/".$prefix."_".$dbFile.".json")){
+    if(file_exists($noneDB_dbFolder."/".$prefix."_".$dbFile.".json")){
         return true;
     }else{
         return false;
@@ -58,6 +59,7 @@ function noneDB_createDB($arg){
     if(!noneDB_checkDB($arg)){
         global $noneDB_secretKey;
         global $noneDB_version;
+        global $noneDB_dbFolder;
         $prefix=noneDB_hashCreate($noneDB_secretKey);
         $time=time();
         $dbRaw=array(
@@ -66,7 +68,7 @@ function noneDB_createDB($arg){
             ),
             "data"=>array()
         );
-        $dbFile = fopen('data/'.$prefix.'_'.noneDB_hashCreate($arg).'.json', 'w');
+        $dbFile = fopen($noneDB_dbFolder.'/'.$prefix.'_'.noneDB_hashCreate($arg).'.json', 'w');
         fwrite($dbFile, json_encode($dbRaw));
         fclose($dbFile);
         return true;
@@ -78,29 +80,29 @@ function noneDB_createDB($arg){
 function noneDB_insert($data, $db){
     global $noneDB_secretKey;
     global $noneDB_version;
+    global $noneDB_dbFolder;
     $millisecond=round(microtime(true) * 1000);
     $prefix=noneDB_hashCreate($noneDB_secretKey);
     $dbFile=noneDB_hashCreate($db);
-    $handle = fopen('data/'.$prefix.'_'.$dbFile.'.json', "r");
-    $contents = json_decode(fread($handle, filesize('data/'.$prefix.'_'.$dbFile.'.json')));
+    $handle = fopen($noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json', "r");
+    $contents = json_decode(fread($handle, filesize($noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json')));
     fclose($handle);
+
     $dataDB=$contents->data;
     $config=$contents->config;
-    var_dump($data);
-    ////
-    $newInsert=array(
-        "insertID"=>$millisecond
-    );
-    array_push($data, $newInsert);
+
+    $data=json_decode($data);
     array_push($dataDB, $data);
-    ////
 
     $dbRaw=array(
         "config"=>$config,
         "data"=>$dataDB
     );
+
     $dbFile = fopen('data/'.$prefix.'_'.$dbFile.'.json', 'w');
+    flock($dbFile, LOCK_EX);
     fwrite($dbFile, json_encode($dbRaw));
+    flock($dbFile, LOCK_UN);
     fclose($dbFile);
     return true;
 }

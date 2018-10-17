@@ -7,8 +7,12 @@
 $noneDB_version="0.1";
 
 /////////////--- DB CONFIG ---\\\\\\\\\\\\\
+
 //secret key
 $noneDB_secretKey="demo";
+
+// noneDB db folder
+$noneDB_dbFolder="data";
 
 // if you change to true all request will show in the api and your request data is not secure and maybe stolenable,  we recommend this variable set to false
 $noneDB_requestShow=true; 
