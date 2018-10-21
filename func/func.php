@@ -77,6 +77,21 @@ function noneDB_createDB($arg){
     }
 }
 
+function noneDB_process($process, $data, $db){
+    echo $_POST['noneDB_where'];
+    exit();
+    if($process=="insert"){
+        return noneDB_insert($data, $db);
+    }
+    if($process=="update"){
+
+    }
+    if($process=="find"){
+
+    }
+    return false;
+}
+
 function noneDB_insert($data, $db){
     global $noneDB_secretKey;
     global $noneDB_version;

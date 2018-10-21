@@ -21,10 +21,10 @@ $noneDB_requestShow=true;
 $noneDB_secretKeyShow=false; 
 
 // if showDataField is true your data field is not secure and maybe stolenable, we recommend this variable set to false
-$noneDB_showDataField=false;
+$noneDB_showDataField=true;
 
 // if showDBField is true your db information field will show in the api and is not secure true option maybe stolenable, we recommend this variable set to false
-$noneDB_showDBField=false;
+$noneDB_showDBField=true;
 
 // api on/off || if api is true please use `type=api` get parameter
 $noneDB_apiActive=true;
