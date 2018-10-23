@@ -114,7 +114,7 @@ function noneDB_insert($data, $db){
         "data"=>$dataDB
     );
 
-    $dbFile = fopen('data/'.$prefix.'_'.$dbFile.'.json', 'w');
+    $dbFile = fopen($noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json', 'w');
     flock($dbFile, LOCK_EX);
     fwrite($dbFile, json_encode($dbRaw));
     flock($dbFile, LOCK_UN);
