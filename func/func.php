@@ -48,15 +48,18 @@ function noneDB_checkDB($arg){
     global $noneDB_dbFolder;
     global $noneDB_autoCreateDB;
 
-    if($noneDB_autoCreateDB){
-        noneDB_createDB($_POST['noneDB_db']);
-    }
-
     $prefix=noneDB_hashCreate($noneDB_secretKey);
     $dbFile=noneDB_hashCreate($arg);
     if(file_exists($noneDB_dbFolder."/".$prefix."_".$dbFile.".json")){
         return true;
     }else{
+        if($noneDB_autoCreateDB){
+            if(noneDB_createDB($_POST['noneDB_db'])){
+                return true;
+            }else{
+                return false;
+            }
+        }
         return false;
     }
 }
@@ -107,14 +110,12 @@ function noneDB_insert($data, $db){
 
     $dataDB=$contents->data;
     $config=$contents->config;
-
     $data=json_decode($data);
     array_push($dataDB, $data);
     $dbRaw=array(
         "config"=>$config,
         "data"=>$dataDB
     );
-    var_dump()
     $dbFile = fopen($noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json', 'w');
     flock($dbFile, LOCK_EX);
     fwrite($dbFile, json_encode($dbRaw));
