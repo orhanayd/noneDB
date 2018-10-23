@@ -33,6 +33,6 @@ $noneDB_apiActive=true;
 $noneDB_apiHeaderJson=true;
 
 // auto create db
-$noneDB_autoCreate=true;
+$noneDB_autoCreateDB=true;
 
 ?>

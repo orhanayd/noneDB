@@ -46,6 +46,12 @@ function noneDB_hashCreate($arg){
 function noneDB_checkDB($arg){
     global $noneDB_secretKey;
     global $noneDB_dbFolder;
+    global $noneDB_autoCreateDB;
+
+    if($noneDB_autoCreateDB){
+        noneDB_createDB($_POST['noneDB_db']);
+    }
+
     $prefix=noneDB_hashCreate($noneDB_secretKey);
     $dbFile=noneDB_hashCreate($arg);
     if(file_exists($noneDB_dbFolder."/".$prefix."_".$dbFile.".json")){
@@ -56,38 +62,34 @@ function noneDB_checkDB($arg){
 }
 
 function noneDB_createDB($arg){
-    if(!noneDB_checkDB($arg)){
-        global $noneDB_secretKey;
-        global $noneDB_version;
-        global $noneDB_dbFolder;
-        $prefix=noneDB_hashCreate($noneDB_secretKey);
-        $time=time();
-        $dbRaw=array(
-            "config"=>array(
-               "dbName"=>$arg, "version"=>$noneDB_version, "createdDate"=>$time
-            ),
-            "data"=>array()
-        );
-        $dbFile = fopen($noneDB_dbFolder.'/'.$prefix.'_'.noneDB_hashCreate($arg).'.json', 'w');
-        fwrite($dbFile, json_encode($dbRaw));
-        fclose($dbFile);
-        return true;
-    }else{
-        return false;
-    }
+    global $noneDB_secretKey;
+    global $noneDB_version;
+    global $noneDB_dbFolder;
+    $prefix=noneDB_hashCreate($noneDB_secretKey);
+    $time=time();
+    $dbRaw=array(
+        "config"=>array(
+           "dbName"=>$arg, "version"=>$noneDB_version, "createdDate"=>$time
+        ),
+        "data"=>array()
+    );
+    $dbFile = fopen($noneDB_dbFolder.'/'.$prefix.'_'.noneDB_hashCreate($arg).'.json', 'w');
+    fwrite($dbFile, json_encode($dbRaw));
+    fclose($dbFile);
+    return true;
 }
 
 function noneDB_process($process, $data, $db){
-    echo $_POST['noneDB_where'];
-    exit();
-    if($process=="insert"){
-        return noneDB_insert($data, $db);
-    }
-    if($process=="update"){
-
-    }
-    if($process=="find"){
-
+    if(noneDB_checkDB($db)){
+        if($process=="insert"){
+            return noneDB_insert($data, $db);
+        }
+        if($process=="update"){
+    
+        }
+        if($process=="find"){
+    
+        }
     }
     return false;
 }
@@ -108,12 +110,11 @@ function noneDB_insert($data, $db){
 
     $data=json_decode($data);
     array_push($dataDB, $data);
-
     $dbRaw=array(
         "config"=>$config,
         "data"=>$dataDB
     );
-
+    var_dump()
     $dbFile = fopen($noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json', 'w');
     flock($dbFile, LOCK_EX);
     fwrite($dbFile, json_encode($dbRaw));
