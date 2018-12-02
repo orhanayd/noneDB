@@ -50,14 +50,21 @@ function noneDB_checkDB($arg){
 
     $prefix=noneDB_hashCreate($noneDB_secretKey);
     $dbFile=noneDB_hashCreate($arg);
+    if(!file_exists($noneDB_dbFolder)){
+        return array(
+            "result"=>false,
+            "desc"=>"database main folder not found!"
+        );
+    }
     if(file_exists($noneDB_dbFolder."/".$prefix."_".$dbFile.".json")){
         return true;
     }else{
         if($noneDB_autoCreateDB){
-            if(noneDB_createDB($_POST['noneDB_db'])){
+            $createDB=noneDB_createDB($_POST['noneDB_db']);
+            if($createDB['result']){
                 return true;
             }else{
-                return false;
+                return $createDB['desc'];
             }
         }
         return false;
@@ -68,6 +75,12 @@ function noneDB_createDB($arg){
     global $noneDB_secretKey;
     global $noneDB_version;
     global $noneDB_dbFolder;
+    if(!file_exists($noneDB_dbFolder)){
+        return array(
+            "result"=>false,
+            "desc"=>"database folder not found!"
+        );
+    }
     $prefix=noneDB_hashCreate($noneDB_secretKey);
     $time=time();
     $dbRaw=array(
@@ -83,9 +96,14 @@ function noneDB_createDB($arg){
 }
 
 function noneDB_process($process, $data, $db){
-    if(noneDB_checkDB($db)){
+    $checkDB=noneDB_checkDB($db);
+    if($checkDB){
         if($process=="insert"){
-            return noneDB_insert($data, $db);
+            $inserter=noneDB_insert($data, $db);
+            return array(
+                "result"=>$inserter['result'],
+                "desc"=>$inserter['desc']
+            );
         }
         if($process=="update"){
     
@@ -93,34 +111,68 @@ function noneDB_process($process, $data, $db){
         if($process=="find"){
     
         }
+    }else{
+        
     }
     return false;
 }
+function getFile($local){
+    $getFile=file_get_contents($local);
+    if(is_null($getFile)){
+        return getFile($local);
+    }else{
+        return $getFile;
+    }
+}
 
 function noneDB_insert($data, $db){
-    global $noneDB_secretKey;
-    global $noneDB_version;
-    global $noneDB_dbFolder;
+    global $noneDB_secretKey, $noneDB_version, $noneDB_dbFolder;
     $millisecond=round(microtime(true) * 1000);
     $prefix=noneDB_hashCreate($noneDB_secretKey);
     $dbFile=noneDB_hashCreate($db);
-    $handle = fopen($noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json', "r");
-    $contents = json_decode(fread($handle, filesize($noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json')));
-    fclose($handle);
+    $dbLocation = $noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json';
+    if(!file_exists($dbLocation)){
+        return array(
+            "result"=>false,
+            "desc"=>"Failed to retrieve data from database, please check your database configration."
+        );
+    }
+    $handle = fopen($dbLocation, "r+");
+    if(!$handle){
+        return noneDB_insert($data, $db);
+    }
 
-    $dataDB=$contents->data;
-    $config=$contents->config;
-    $data=json_decode($data);
-    array_push($dataDB, $data);
-    $dbRaw=array(
-        "config"=>$config,
-        "data"=>$dataDB
-    );
-    $dbFile = fopen($noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json', 'w');
-    flock($dbFile, LOCK_EX);
-    fwrite($dbFile, json_encode($dbRaw));
-    flock($dbFile, LOCK_UN);
-    fclose($dbFile);
-    return true;
+        $dbGet=getFile($dbLocation);
+
+        while(!flock($handle, LOCK_EX)) {  // acquire an exclusive lock
+            // waiting to lock the file
+        }
+
+        $contents = json_decode($dbGet);
+        $dataDB=$contents->data;
+        $config=$contents->config;
+
+        if(!is_array($dataDB)){
+            return array(
+                "result"=>false,
+                "desc"=>"Failed to retrieve data from database"
+            );
+        }
+        $data=json_decode($data);
+        array_push($dataDB, $data);
+        $dbRaw=array(
+            "config"=>$config,
+            "data"=>$dataDB
+        );
+
+        ftruncate($handle, 0);      // truncate file
+        fwrite($handle, json_encode($dbRaw));
+        fflush($handle);            // flush output before releasing the lock
+        flock($handle, LOCK_UN);    // release the lock
+        fclose($handle);
+        return array(
+            "result"=>true,
+            "desc"=>"inserted"
+        );
 }
 ?>

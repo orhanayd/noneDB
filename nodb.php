@@ -11,7 +11,7 @@ if(isset($_GET['type']) && $noneDB_apiActive==true && $_GET['type']=="api"){
     if($noneDB_apiHeaderJson===true){
         header("Content-type: application/json; charset=utf-8");
     }
-        echo json_encode(noneDB_resultFunc($noneDB_jsonData, "test"));
+        echo json_encode(noneDB_resultFunc($noneDB_jsonData['result'], $noneDB_jsonData['desc']));
 
 }
 ?>
