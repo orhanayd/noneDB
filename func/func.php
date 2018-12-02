@@ -149,15 +149,20 @@ function noneDB_insert($data, $db){
         }
 
         $contents = json_decode($dbGet);
-        $dataDB=$contents->data;
-        $config=$contents->config;
-
-        if(!is_array($dataDB)){
+        if(!is_object($contents)){
             return array(
                 "result"=>false,
-                "desc"=>"Failed to retrieve data from database"
+                "desc"=>"Failed to retrieve data from database-1"
             );
         }
+        if(!is_array($contents->data)){
+            return array(
+                "result"=>false,
+                "desc"=>"Failed to retrieve data from database-2"
+            );
+        }
+        $dataDB=$contents->data;
+        $config=$contents->config;
         $data=json_decode($data);
         array_push($dataDB, $data);
         $dbRaw=array(
