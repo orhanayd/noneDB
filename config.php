@@ -35,4 +35,7 @@ $noneDB_apiHeaderJson=true;
 // auto create db
 $noneDB_autoCreateDB=true;
 
+// max database size (please do not change this value. we recommend this value best performance and stable.)
+$noneDB_databaseSize="10.1"; // MB
+
 ?>
