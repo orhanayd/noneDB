@@ -182,7 +182,7 @@ function noneDB_insert($data, $db){
 
         $contents = json_decode($dbGet['result']);
         if(!is_object($contents)){
-            throw new Exception('Failed to retrieve data from database, please check your database configration.');
+            throw new Exception('Failed to retrieve data from database-1');
             return array(
                 "status"=>false,
                 "desc"=>"Failed to retrieve data from database-1"
