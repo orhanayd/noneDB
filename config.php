@@ -26,9 +26,6 @@ $noneDB_showDataField=false;
 // if showDBField is true your db information field will show in the api and is not secure true option maybe stolenable, we recommend this variable set to false
 $noneDB_showDBField=false;
 
-// api on/off || if api is true please use `type=api` get parameter
-$noneDB_apiActive=true;
-
 // api result header set to json header
 $noneDB_apiHeaderJson=true;
 

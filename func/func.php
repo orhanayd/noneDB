@@ -34,7 +34,8 @@ function noneDB_resultFunc($status, $content){
         "time"=> time(),
         "desc"=>$content,
         "request"=>$requestData
-    ); 
+    );
+
     return $result;
 }
 
@@ -66,7 +67,7 @@ function noneDB_checkDB($arg){
         return true;
     }else{
         if($noneDB_autoCreateDB){
-            $createDB=noneDB_createDB($_POST['noneDB_db']);
+            $createDB=noneDB_createDB($arg);
             if($createDB['status']){
                 return true;
             }else{
@@ -99,7 +100,10 @@ function noneDB_createDB($arg){
     $dbFile = fopen($noneDB_dbFolder.'/'.$prefix.'_'.noneDB_hashCreate($arg).'.json', 'w');
     fwrite($dbFile, json_encode($dbRaw));
     fclose($dbFile);
-    return true;
+    return array(
+        "status"=>true,
+        "desc"=>"database created"
+    );
 }
 
 function noneDB_process($process, $data, $db){
@@ -107,10 +111,7 @@ function noneDB_process($process, $data, $db){
     if($checkDB){
         if($process=="insert"){
             $inserter=noneDB_insert($data, $db);
-            return array(
-                "status"=>$inserter['status'],
-                "desc"=>$inserter['desc']
-            );
+            return noneDB_resultFunc($inserter['status'], $inserter['desc']);
         }
         if($process=="update"){
     
@@ -197,8 +198,21 @@ function noneDB_insert($data, $db){
         }
         $dataDB=$contents->data;
         $config=$contents->config;
+        //$data=array("username"=>"orhanayd");
+        //var_dump($data);
         if(!is_array($data)){
-            $data=json_decode($data);
+            if(is_object(json_decode($data))){
+               $data=json_decode($data, false); 
+            }else{
+                if($data=="" || is_null($data)){
+                    throw new Exception('data is null');
+                    return array(
+                        "status"=>false,
+                        "desc"=>"data is null"
+                    );
+                }
+                $data=array($data);
+            }
         }
         array_push($dataDB, $data);
         $dbRaw=array(
