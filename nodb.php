@@ -10,7 +10,7 @@ require_once("func/func.php");
             /**
              * (process, arg, db)
              */
-            $test=noneDB_process("insert", $_POST['noneDB_data'], "test");
+            $test=noneDB_process("insert", array("username"=>"yildizozan", "password"=>"1234567"), "test");
                     echo json_encode($test);
         } catch (\Throwable $th) {
             echo "ERROR: ". $th->getMessage(), "\n";
