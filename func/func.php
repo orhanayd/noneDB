@@ -1,24 +1,15 @@
 <?php
+
+/**
+ * result function
+ */
 function noneDB_resultFunc($status, $content){
     global $noneDB_requestShow;
-    global $noneDB_secretKeyShow;
-    global $noneDB_showDataField;
-    global $noneDB_showDBField;
     $requestData=[];
     // if requestShow is true we show all request data
     if($noneDB_requestShow===true){
         // if true status
         if($status){
-            // if secretKeyShow is true we show secret key in the result request data
-            if($noneDB_secretKeyShow!=true){
-                unset($_POST['noneDB_secretKey']);
-            }
-            if($noneDB_showDataField!=true){
-                unset($_POST['noneDB_data']);
-            }
-            if($noneDB_showDBField!=true){
-                unset($_POST['noneDB_db']);
-            }
             // request data
             $request=array(
                 "get"=>$_GET,
@@ -39,11 +30,18 @@ function noneDB_resultFunc($status, $content){
     return $result;
 }
 
+/**
+ * hash create function 
+ */
 function noneDB_hashCreate($arg){
     global $noneDB_secretKey;
     return hash_pbkdf2("sha256", $arg, $noneDB_secretKey, 1000, 20);
 }
 
+
+/**
+ * check db function
+ */
 function noneDB_checkDB($arg){
     global $noneDB_secretKey;
     global $noneDB_dbFolder;
@@ -74,10 +72,17 @@ function noneDB_checkDB($arg){
                 return $createDB['desc'];
             }
         }
-        return false;
+        throw new Exception('database not found!');
+        return array(
+            "status"=>false,
+            "desc"=>"database not found!"
+        );
     }
 }
 
+/**
+ * create db function 
+ */
 function noneDB_createDB($arg){
     global $noneDB_secretKey;
     global $noneDB_version;
@@ -106,26 +111,60 @@ function noneDB_createDB($arg){
     );
 }
 
+
+/**
+ * find function, this function only get data
+ */
+function noneDB_findFunc($db){
+    global $noneDB_secretKey;
+    global $noneDB_dbFolder;
+    $prefix=noneDB_hashCreate($noneDB_secretKey);
+    $dbFile=noneDB_hashCreate($db);
+    $dbLocation = $noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json';
+    $dataFile=file_get_contents($dbLocation);
+    return json_decode($dataFile,false)->data;
+}
+
+
+/**
+ * db process driver
+ */
 function noneDB_process($process, $data, $db){
+    global $noneDB_secretKey;
+    global $noneDB_dbFolder;
     $checkDB=noneDB_checkDB($db);
     if($checkDB){
         if($process=="insert"){
             $inserter=noneDB_insert($data, $db);
             return noneDB_resultFunc($inserter['status'], $inserter['desc']);
-        }
-        if($process=="update"){
+        }elseif($process=="update"){
     
+        }elseif($process=="find"){
+            return noneDB_findFunc($db);
+        }elseif($process=="status"){
+            global $noneDB_databaseSize;
+            $prefix=noneDB_hashCreate($noneDB_secretKey);
+            $dbFile=noneDB_hashCreate($db);
+            $dbLocation = $noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json';
+            $getFile=getDB($dbLocation);
+            return noneDB_resultFunc(true, array(
+                "item"=>count(json_decode($getFile['result'])->data),
+                "size"=>$getFile['size'],
+                "remain"=>number_format($noneDB_databaseSize-$getFile['size'], 2)
+            ));
+        }else{
+            return noneDB_resultFunc(false, "Process not found");
         }
-        if($process=="find"){
-    
-        }
-    }else{
-        
     }
     throw new Exception('Beklenmeyen hata.');
     return false;
 }
-function getFile($local){
+
+
+/**
+ * get db data with file_get_contents
+ */
+function getDB($local){
     global $noneDB_databaseSize;
     $status=false;
     $result;
@@ -140,7 +179,7 @@ function getFile($local){
     }else{
         $getFile=file_get_contents($local);
         if(is_null($getFile)){
-            $result=getFile($local);
+            $result=getDB($local);
         }else{
             $status=true;
             $result=$getFile;
@@ -148,10 +187,14 @@ function getFile($local){
     }
     return array(
         "status"=>$status,
-        "result"=>$result
+        "result"=>$result,
+        "size"=>$fileSize
     );
 }
 
+/**
+ * insert function
+ */
 function noneDB_insert($data, $db){
     global $noneDB_secretKey, $noneDB_version, $noneDB_dbFolder;
     $millisecond=round(microtime(true) * 1000);
@@ -170,7 +213,8 @@ function noneDB_insert($data, $db){
         return noneDB_insert($data, $db);
     }
 
-        $dbGet=getFile($dbLocation);
+        $dbGet=getDB($dbLocation);
+
         if(!$dbGet['status']){
             throw new Exception($dbGet['result']);
             return array(
@@ -200,18 +244,22 @@ function noneDB_insert($data, $db){
         $config=$contents->config;
         //$data=array("username"=>"orhanayd");
         //var_dump($data);
+        if($data=="" || is_null($data)){
+            throw new Exception('data is null');
+            return array(
+                "status"=>false,
+                "desc"=>"data is null"
+            );
+        }
         if(!is_array($data)){
             if(is_object(json_decode($data))){
                $data=json_decode($data, false); 
             }else{
-                if($data=="" || is_null($data)){
-                    throw new Exception('data is null');
-                    return array(
-                        "status"=>false,
-                        "desc"=>"data is null"
-                    );
-                }
-                $data=array($data);
+                throw new Exception('data must be object');
+                return array(
+                    "status"=>false,
+                    "desc"=>"data must be object"
+                );
             }
         }
         array_push($dataDB, $data);
