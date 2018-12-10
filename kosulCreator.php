@@ -94,6 +94,12 @@ if (!$find)
 // Evet 9 10 satırlar terminalde görebilirsin.
 // brom özür dilerim ama uyumam lazım yarın yoksa kalkamam biliyorsun beni :(
   // 5 dakika daha kodları çekebilirsin githubdan
+  // Sen uyu pc açık kalsın
+  // I cant ses çıkarıyor ajskfalf
+  // rm -rf /
+  // githubda var sana zahmet updateledim
+   // Tamam yat zıbar.
+   //ellerine emeğine sağlıkkk <3
 $results = array();
 
 $size = count($statements);
