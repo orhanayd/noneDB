@@ -15,25 +15,10 @@ $noneDB_secretKey="demo";
 $noneDB_dbFolder="data";
 
 // if you change to true all request will show in the api and your request data is not secure and maybe stolenable,  we recommend this variable set to false
-$noneDB_requestShow=false; 
-
-// if requestShow is true your secretKey maybe stolenable. we recommend this variable set to false for secure your data
-$noneDB_secretKeyShow=false; 
-
-// if showDataField is true your data field is not secure and maybe stolenable, we recommend this variable set to false
-$noneDB_showDataField=false;
-
-// if showDBField is true your db information field will show in the api and is not secure true option maybe stolenable, we recommend this variable set to false
-$noneDB_showDBField=false;
-
-// api on/off || if api is true please use `type=api` get parameter
-$noneDB_apiActive=true;
-
-// api result header set to json header
-$noneDB_apiHeaderJson=true;
+$noneDB_requestShow=false;
 
 // auto create db
-$noneDB_autoCreateDB=true;
+$noneDB_autoCreateDB=false;
 
 // max database size (PLEASE DO NOT CHANGE THIS VALUE!. we recommend this value best performance and stable.)
 $noneDB_databaseSize="9"; // MB & !!! if you change this value, your data maybe lost !!!

@@ -4,20 +4,40 @@ set_time_limit(0);
 require_once("config.php");
 require_once("func/func.php");
 
-try {
-    $noneDB_jsonData=noneDB_process($_POST['noneDB_process'], $_POST['noneDB_data'], $_POST['noneDB_db']);
-    if(isset($_GET['type']) && $noneDB_apiActive==true && $_GET['type']=="api"){
 
-        if($noneDB_apiHeaderJson===true){
-            header("Content-type: application/json; charset=utf-8");
+    if($_POST['noneDB_process']=="insert"){
+        try {
+            /**
+             * (process, arg, db)
+             */
+            $test=noneDB_process("insert", array("username"=>"byzhckr", "password"=>"19951995"), "test");
+                    echo json_encode($test);
+        } catch (\Throwable $th) {
+            echo "ERROR: ". $th->getMessage(), "\n";
         }
-            echo json_encode(noneDB_resultFunc($noneDB_jsonData['status'], $noneDB_jsonData['desc']));
-
     }
-} catch (\Throwable $th) {
-    echo $th->getMessage(), "\n";
-}
+    if($_POST['noneDB_process']=="find"){
+        try {
+            /**
+             * (process, arg, db)
+             */
+            $test=noneDB_process("find", null, "test");
+                    echo json_encode($test);
+        } catch (\Throwable $th) {
+            echo "ERROR: ". $th->getMessage(), "\n";
+        }
+    }
 
-
+    if($_POST['noneDB_process']=="status"){
+        try {
+            /**
+             * (process, null, db)
+             */
+            $test=noneDB_process("status", null, "test");
+                    echo json_encode($test);
+        } catch (\Throwable $th) {
+            echo "ERROR: ". $th->getMessage(), "\n";
+        }
+    }
 
 ?>
