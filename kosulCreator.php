@@ -3,30 +3,9 @@
 $dataFile=file_get_contents("data/12ef2be0440efb2ab333_bc6eea82fc2c78b6fe32.json");
 $db=json_decode($dataFile,true)['data']; 
 
-// OK
-/*
-array(9) {
-  [0]=>
-  array(2) {
-    ["username"]=>
-    string(8) "orhanayd"
-    ["password"]=>
-    string(8) "19951995"
-  }
-}
-*/
 
 $query="username:byzhckr&password:19951995";
-/**
- * exploded & query
- */
-/*
-  Senin düşündüğün mantıktan biraz farklı işleyecek.
-  Evrensel oluyor count lenght bla bla
-  Sana dediğim gibi senin düşündüğünden farklı bir mantıkla ayn işi yapacak
-  Row column unique mi olacak?
-  iki tane orhanaydogdu olacak mı? olabilir sonuçta yazılımcı kontrol etmeyebilir orhanaydogdu verisi varmı yok mu diye biz olanları listeyeleyeceğiz.
-*/
+
 $statements = explode("&", $query);
 
 // Burada koşulları sayıyoruz
