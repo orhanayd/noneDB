@@ -135,6 +135,10 @@ function noneDB_process($process, $data, $db){
     $checkDB=noneDB_checkDB($db);
     if($checkDB){
         if($process=="insert"){
+            /**
+             * @data array
+             * @db database name
+             */
             $inserter=noneDB_insert($data, $db);
             return noneDB_resultFunc($inserter['status'], $inserter['desc']);
         }elseif($process=="update"){
@@ -152,12 +156,50 @@ function noneDB_process($process, $data, $db){
                 "size"=>$getFile['size'],
                 "remain"=>number_format($noneDB_databaseSize-$getFile['size'], 2)
             ));
+        }elseif($process=="delete"){
+            /**
+             * @data number of record id (integer)
+             * @db database name
+             */
+            $process=noneDB_deleteRecord($data, $db);
+            return noneDB_resultFunc($process['status'], $process['desc']);
         }else{
             return noneDB_resultFunc(false, "Process not found");
         }
     }
     throw new Exception('Beklenmeyen hata.');
     return false;
+}
+
+function noneDB_deleteRecord($id, $db){
+    global $noneDB_secretKey, $noneDB_version, $noneDB_dbFolder;
+    $prefix=noneDB_hashCreate($noneDB_secretKey);
+    $dbFile=noneDB_hashCreate($db);
+    $dbLocation = $noneDB_dbFolder.'/'.$prefix.'_'.$dbFile.'.json';
+    $status=false;
+    $result;
+    $desc;
+    if(is_numeric($id)){
+        $db=noneDB_findFunc($db);
+        unset($db[$key]);
+        if(unlink($dbLocation)){
+            $fh = fopen($dbLocation, 'a');
+            fwrite($fh, json_encode($db));
+            fclose($fh);
+            $status=true;
+            $result=$db;
+            $desc="Deleted";
+        }else{
+            return noneDB_deleteRecord($id, $db);
+        }
+    }else{
+        $desc="Check Delete Parameter (DATA(ID))";
+    }
+    return array(
+        "status"=>$status,
+        "result"=>$result,
+        "desc"=>$desc
+    );
 }
 
 
@@ -192,9 +234,12 @@ function getDB($local){
     );
 }
 
+
 /**
- * insert function
- */
+* INSERT FUNCTION
+* @data array
+* @db database name
+*/
 function noneDB_insert($data, $db){
     global $noneDB_secretKey, $noneDB_version, $noneDB_dbFolder;
     $millisecond=round(microtime(true) * 1000);
