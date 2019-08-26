@@ -13,6 +13,7 @@ noneDB is **free** and **open source** noSQL database for php projects. **No any
   - find, 
   - update,
   - delete
+  
   ***extra features:***
   - limit
 
