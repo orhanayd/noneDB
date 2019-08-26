@@ -1,12 +1,19 @@
 <?php
+// first this project start date 15.11.2018
 // noneDB - 20.08.2019 -- Orhan AYDOĞDU
+
+// OPEN SOURCE <3
+// please read firstly noneDB documents if your data is important ::))) 
+// but every data is important for us <3 
+// created with love <3  || ORHAN AYDOGDU || www.orhanaydogdu.com.tr || info@orhanaydogdu.com.tr
+
 ini_set('memory_limit', '-1');
 
 class noneDB {
 
-    private $dbDir="db/";
-    private $secretKey="nonedb_123"; // lütfen burayı projenizde değiştirin ve kimse ile paylaşmayın.
-    private $autoCreateDB=true;
+    private $dbDir="db/"; // please change this path and don't fotget end with / 
+    private $secretKey="nonedb_123"; // please change this secret key! and don't share anyone or anywhere!!
+    private $autoCreateDB=true; // if you want to auto create your db true or false
 
     /**
      * hash to db name for security
@@ -19,6 +26,7 @@ class noneDB {
      * check db
      * if auto create db is true will be create db
      * if auto create db is false and is not in db dir return false
+     * @param string $dbname
      */
     function checkDB($dbname=null){
         /**
