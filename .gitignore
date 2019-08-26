@@ -2,3 +2,4 @@ parser.php
 stress.php
 *.json
 test.php
+.DS_Store
