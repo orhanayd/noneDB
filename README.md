@@ -1,19 +1,24 @@
 # noneDB
 
-noneDB is free and open source noSQL database for php projects. No any installations!, just include and GO.
+noneDB is **free** and **open source** noSQL database for php projects. **No any installations**!, Just **include** and **GO**.
 
   - Fast,
   - Stable,
   - Secure,
   - Awesome for small projects.
 
-# New Features! v1
+# What can I do now!
 
-  - insert, find, update and delete operations.
+  - insert,
+  - find, 
+  - update,
+  - delete
+  ***extra features:***
+  - limit
 
 
 # Examples:
-#### -Insert one array:
+#### ***-Insert one array:***
 ```php
 <?php
     include("noneDB.php");
@@ -25,12 +30,14 @@ noneDB is free and open source noSQL database for php projects. No any installat
     $insert = $noneDB -> insert("your_dbname", $data);
     echo json_encode($insert);
 ?>
-Response:
+```
+***Response:***
+``` json
 {
     "n": 1
 }
 ```
-#### -Insert multiple array:
+#### ***-Insert multiple array:***
 ```php
 <?php
     include("noneDB.php");
@@ -45,12 +52,14 @@ Response:
     $insert = $noneDB -> insert("your_dbname", $data);
     echo json_encode($insert);
 ?>
-Response:
+```
+***Response:***
+```json
 {
     "n": 2
 }
 ```
-#### -Find records: 
+#### ***-Find records:*** 
  (Like "SELECT" query in sql)
 ```php
 <?php
@@ -67,17 +76,19 @@ $filter = array("username"=>"orhanayd");
 $test = $noneDB -> find("your_dbname", $filter, false);
 echo json_encode($test);
 ?>
-Result:
+```
+***Result:***
+```json
 [
     {
     "username": "orhanayd", 
     "password": "123456", 
-    "key":0
+    "key": 0
     }
 ]
 ```
 
-#### - Update record(s)
+#### ***- Update record(s)***
 ```php
 <?php
 include("noneDB.php");
@@ -105,13 +116,16 @@ $update = array(
 $test = $noneDB -> update("your_dbname", $update);
 echo json_encode($test);
 ?>
-Result:
+```
+***Result:***
+```json
 {
     "n": 1
 }
 ```
 
-#### * Additional features:
+## Additional features:
+
 ##### Extract a slice of the array (Like “LIMIT” query in sql):
 for example:
 ```php
