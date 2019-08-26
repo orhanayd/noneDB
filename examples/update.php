@@ -8,7 +8,7 @@ $noneDB = new noneDB();
  *  array("set"=> new values or new keys)
  * )
  * 
- * note: you can search by key for example;
+ * note: you can update by key for example;
  * array(
  *  array("key"=>[0,2,3]),
  *  array("set"=>array("newkey"=>"newvalue", "oldkey"=>"newvalue"))

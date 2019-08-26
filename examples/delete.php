@@ -10,6 +10,6 @@ $noneDB = new noneDB();
  *  just delete only 0.2,3 keys
  */
 $filter = array("username"=>"like");
-$test = $noneDB -> delete("your_dbname", $filter, false);
+$test = $noneDB -> delete("your_dbname", $filter);
 echo json_encode($test);
 ?>
