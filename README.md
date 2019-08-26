@@ -1,6 +1,6 @@
 # noneDB
 
-noneDB is free and opensource noSQL database for php projects.
+noneDB is free and open source noSQL database for php projects. No any installations!, just include and GO.
 
   - Fast,
   - Stable,
