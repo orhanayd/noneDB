@@ -341,7 +341,7 @@ class noneDB {
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
-        $find=$this->find("orhan", $data);
+        $find=$this->find($dbname, $data);
         if(count($find)>0){
             $buffer = $this->getData($fullDBPath);
             foreach($find as $row){
@@ -368,7 +368,7 @@ class noneDB {
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
-        $find=$this->find("orhan", $data[0]);
+        $find=$this->find($dbname, $data[0]);
         if(count($find)>0){
             $buffer = $this->getData($fullDBPath);
             foreach($find as $row){
