@@ -19,7 +19,7 @@ $noneDB = new noneDB();
 $update = array(
     array("username"=>"orhanayd"),
     array("set"=>array(
-        "sifre"=>"orhanayds95s"
+        "sifre"=>"123456789"
     ))
 );
 $test = $noneDB -> update("your_dbname", $update);

@@ -2,7 +2,7 @@
 header('Content-Type: application/json');
 include("../noneDB.php");
 $noneDB = new noneDB;
-$data = array("username"=>"orhanayd", "sifre"=>"19951995");
+$data = array("username"=>"orhanayd", "sifre"=>"123456");
 /**
  * $data will be insert to your_dbname 
  */
