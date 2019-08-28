@@ -132,7 +132,7 @@ include("noneDB.php");
 $noneDB = new noneDB();
 /**
  * you can delete like this;
- *  array("username"=>"orhan")
+ *  array("username"=>"orhanayd")
  * or
  *  array("key"=>[2,4,5])
  *  just delete only 0.2,3 keys
