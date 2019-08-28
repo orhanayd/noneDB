@@ -1,3 +1,4 @@
+
 # noneDB
 
 noneDB is **free** and **open source** noSQL database for php projects. **No any installations**!, Just **include** and **GO**.
@@ -17,6 +18,12 @@ noneDB is **free** and **open source** noSQL database for php projects. **No any
   ***extra features:***
   - limit
 
+Please change the value on this variables! and don't share! (noneDB.php)
+```php
+private $dbDir="db/"; // please change this path and don't fotget end with /
+private $secretKey="nonedb_123"; // please change this secret key! and don't share anyone or anywhere!!
+private $autoCreateDB=true; // if you want to auto create your db true or false
+```
 
 # Examples:
 #### ***-Insert one array:***
