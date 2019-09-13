@@ -250,6 +250,10 @@ class noneDB {
                         $add=true;
                         $raw=[];
                         foreach($filters as $key=>$value){
+                            if($dbContents[$i]===null){
+                                $add=false;
+                                break;
+                            }
                                     if(!array_key_exists($key, $dbContents[$i])){
                                         $add=false;
                                         break;
@@ -346,7 +350,7 @@ class noneDB {
         if(count($find)>0){
             $buffer = $this->getData($fullDBPath);
             foreach($find as $row){
-               unset($buffer['data'][$row['key']]);
+               $buffer['data'][$row['key']]=null;
             }
             $this->insertData($fullDBPath, $buffer);
             $main_response['n']=count($find);
