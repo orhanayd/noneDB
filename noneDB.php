@@ -33,6 +33,7 @@ class noneDB {
      * @param string $dbname
      */
     function checkDB($dbname=null){
+        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         /**
          * if db dir is not in project folder will be create.
          */
@@ -66,11 +67,7 @@ class noneDB {
      * @param string $dbname
      */
     public function createDB($dbname){
-        if(!ctype_alpha($dbname)){ // alfabetik değilse false
-            return false;
-        }elseif(!ctype_lower($dbname)){ // db ismi küçük harf değilse false
-            return false;
-        }
+        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
         if(!file_exists($this->dbDir)){
@@ -90,6 +87,7 @@ class noneDB {
 
 
     public function getDBs($info=false){
+        $info =  preg_replace("/[^A-Za-z0-9' -]/", '', $info);
         $this->checkDB();
         function FileSizeConvert($bytes){
             $bytes = floatval($bytes);
@@ -219,6 +217,7 @@ class noneDB {
      * read db all data
      */
     public function find($dbname, $filters=0, $typeCheck=true){
+        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
         if(!$this->checkDB($dbname)){
@@ -278,6 +277,7 @@ class noneDB {
      * @param array $data
      */
     public function insert($dbname, $data){
+        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $main_response=array("n"=>0);
         $this->checkDB($dbname);
         $dbnameHashed=$this->hashDBName($dbname);
@@ -332,6 +332,7 @@ class noneDB {
      * @param array $data
      */
     public function delete($dbname, $data){
+        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $main_response=array("n"=>0);
         if(!is_array($data)){
             $main_response['error']="Please check your delete paramters";
@@ -359,6 +360,7 @@ class noneDB {
      * @param array $data
      */
     public function update($dbname, $data){
+        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $main_response=array("n"=>0);
         if(is_array($data)!==true || !count($data) === count($data, COUNT_RECURSIVE) || array_key_exists("key", $data[1]['set']) || !array_key_exists("set", $data[1])){
             $main_response['error']="Please check your update paramters";
