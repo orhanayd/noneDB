@@ -14,8 +14,8 @@
 ini_set('memory_limit', '-1');
 
 class noneDB {
-
-    private $dbDir="db/"; // please change this path and don't fotget end with / 
+    
+    private $dbDir=__DIR__."/"."db/"; // please change this path and don't fotget end with / 
     private $secretKey="nonedb_123"; // please change this secret key! and don't share anyone or anywhere!!
     private $autoCreateDB=true; // if you want to auto create your db true or false
 
@@ -26,6 +26,7 @@ class noneDB {
         return hash_pbkdf2("sha256", $dbname, $this->secretKey, 1000, 20);
     }
 
+
     /**
      * check db
      * if auto create db is true will be create db
@@ -33,6 +34,9 @@ class noneDB {
      * @param string $dbname
      */
     function checkDB($dbname=null){
+        if(!$dbname){
+            return false;
+        }
         $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         /**
          * if db dir is not in project folder will be create.
@@ -87,8 +91,12 @@ class noneDB {
 
 
     public function getDBs($info=false){
-        $info =  preg_replace("/[^A-Za-z0-9' -]/", '', $info);
-        $this->checkDB();
+        if(!is_bool($info)){
+            $info =  preg_replace("/[^A-Za-z0-9' -]/", '', $info);
+        }else{
+            $info = null;
+        }
+        $this->checkDB($info);
         function FileSizeConvert($bytes){
             $bytes = floatval($bytes);
                 $arBytes = array(
@@ -124,10 +132,11 @@ class noneDB {
             }
             return $result;
         }
+        
         if(is_string($info)){
             $dbnameHashed=$this->hashDBName($info);
             $fullDBPathInfo=$this->dbDir.$dbnameHashed."-".$info.".nonedbinfo";
-            $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
+            $fullDBPath=$this->dbDir.$dbnameHashed."-".$info.".nonedb";
             if(file_exists($fullDBPathInfo)){
                 $dbInfo = fopen($fullDBPathInfo, "r");
                 $db= array("name"=>$info, "createdTime"=>(int)fgets($dbInfo), "size"=>FileSizeConvert(filesize($fullDBPath)));
