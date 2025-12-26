@@ -1,0 +1,34 @@
+{
+    "name": "orhanayd/nonedb",
+    "description": "File-based NoSQL database for PHP - No installation required",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Orhan Aydogdu",
+            "email": "info@orhanaydogdu.com.tr",
+            "homepage": "https://www.orhanaydogdu.com.tr"
+        }
+    ],
+    "require": {
+        "php": ">=7.4"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.6"
+    },
+    "autoload": {
+        "classmap": ["noneDB.php"]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "noneDB\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test-verbose": "phpunit --testdox"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

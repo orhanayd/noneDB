@@ -1,6 +1,31 @@
+# Dependencies
+/vendor/
+composer.phar
+composer.lock
+
+# Database files
+/db/*.nonedb
+/db/*.nonedbinfo
+
+# Test artifacts
+/tests/test_db/
+.phpunit.result.cache
+.phpunit.cache/
+
+# IDE
+.idea/
+.vscode/
+*.sublime-*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Dev files
 parser.php
 stress.php
-*.json
 test.php
-.DS_Store
-.DS_Store
+CLAUDE.md
