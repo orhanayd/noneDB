@@ -405,3 +405,11 @@ MIT License - see [LICENSE](LICENSE) file.
 ---
 
 **Free Software, Hell Yeah!**
+
+---
+
+> "Hayatta en hakiki mürşit ilimdir."
+>
+> "The truest guide in life is science."
+>
+> — **Mustafa Kemal Atatürk**
