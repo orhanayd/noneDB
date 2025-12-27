@@ -24,11 +24,219 @@ class noneDB {
     private $shardSize=10000;         // Max records per shard
     private $autoMigrate=true;        // Auto-migrate legacy DBs to sharded format
 
+    // File locking configuration
+    private $lockTimeout=5;           // Max seconds to wait for lock
+    private $lockRetryDelay=10000;    // Microseconds between lock attempts (10ms)
+
     /**
      * hash to db name for security
      */
     private function hashDBName($dbname){
         return hash_pbkdf2("sha256", $dbname, $this->secretKey, 1000, 20);
+    }
+
+    // ==========================================
+    // ATOMIC FILE OPERATIONS
+    // ==========================================
+
+    /**
+     * Atomically read a file with shared lock
+     * Prevents reading while another process is writing
+     *
+     * @param string $path File path
+     * @param mixed $default Default value if file doesn't exist
+     * @return mixed Decoded JSON data or default value
+     */
+    private function atomicRead($path, $default = null){
+        clearstatcache(true, $path);
+
+        if(!file_exists($path)){
+            return $default;
+        }
+
+        $fp = fopen($path, 'rb');
+        if($fp === false){
+            return $default;
+        }
+
+        $startTime = microtime(true);
+        $locked = false;
+
+        // Try to acquire shared lock with timeout
+        while(!$locked && (microtime(true) - $startTime) < $this->lockTimeout){
+            $locked = flock($fp, LOCK_SH | LOCK_NB);
+            if(!$locked){
+                usleep($this->lockRetryDelay);
+            }
+        }
+
+        if(!$locked){
+            // Fallback: blocking lock as last resort
+            $locked = flock($fp, LOCK_SH);
+        }
+
+        if(!$locked){
+            fclose($fp);
+            return $default;
+        }
+
+        try {
+            $content = stream_get_contents($fp);
+            if($content === false || $content === ''){
+                return $default;
+            }
+            $data = json_decode($content, true);
+            // Check for JSON decode errors (corrupted data)
+            if($data === null && json_last_error() !== JSON_ERROR_NONE){
+                return null; // Return null for corrupted JSON, not default
+            }
+            return $data !== null ? $data : $default;
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+        }
+    }
+
+    /**
+     * Atomically write a file with exclusive lock
+     *
+     * @param string $path File path
+     * @param mixed $data Data to write (will be JSON encoded)
+     * @param bool $prettyPrint Use JSON_PRETTY_PRINT
+     * @return bool Success
+     */
+    private function atomicWrite($path, $data, $prettyPrint = false){
+        // Ensure directory exists
+        $dir = dirname($path);
+        if(!is_dir($dir)){
+            mkdir($dir, 0755, true);
+        }
+
+        $fp = fopen($path, 'cb'); // Create if not exists, open for writing
+        if($fp === false){
+            return false;
+        }
+
+        $startTime = microtime(true);
+        $locked = false;
+
+        // Try to acquire exclusive lock with timeout
+        while(!$locked && (microtime(true) - $startTime) < $this->lockTimeout){
+            $locked = flock($fp, LOCK_EX | LOCK_NB);
+            if(!$locked){
+                usleep($this->lockRetryDelay);
+            }
+        }
+
+        if(!$locked){
+            // Fallback: blocking lock as last resort
+            $locked = flock($fp, LOCK_EX);
+        }
+
+        if(!$locked){
+            fclose($fp);
+            return false;
+        }
+
+        try {
+            ftruncate($fp, 0);
+            rewind($fp);
+            $json = $prettyPrint
+                ? json_encode($data, JSON_PRETTY_PRINT)
+                : json_encode($data);
+            $written = fwrite($fp, $json);
+            fflush($fp);
+            return $written !== false;
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+        }
+    }
+
+    /**
+     * Atomically modify a file: read, apply callback, write
+     * This is the key method that prevents race conditions
+     *
+     * @param string $path File path
+     * @param callable $modifier Function that receives current data and returns modified data
+     * @param mixed $default Default value if file doesn't exist
+     * @param bool $prettyPrint Use JSON_PRETTY_PRINT for output
+     * @return array ['success' => bool, 'data' => modified data, 'error' => string|null]
+     */
+    private function atomicModify($path, callable $modifier, $default = null, $prettyPrint = false){
+        // Ensure directory exists
+        $dir = dirname($path);
+        if(!is_dir($dir)){
+            mkdir($dir, 0755, true);
+        }
+
+        // Open with c+ mode: read/write, create if not exists
+        $fp = fopen($path, 'c+b');
+        if($fp === false){
+            return ['success' => false, 'data' => null, 'error' => 'Failed to open file'];
+        }
+
+        $startTime = microtime(true);
+        $locked = false;
+
+        // Try to acquire exclusive lock with timeout
+        while(!$locked && (microtime(true) - $startTime) < $this->lockTimeout){
+            $locked = flock($fp, LOCK_EX | LOCK_NB);
+            if(!$locked){
+                usleep($this->lockRetryDelay);
+            }
+        }
+
+        if(!$locked){
+            // Fallback: blocking lock as last resort
+            $locked = flock($fp, LOCK_EX);
+        }
+
+        if(!$locked){
+            fclose($fp);
+            return ['success' => false, 'data' => null, 'error' => 'Failed to acquire lock'];
+        }
+
+        try {
+            // Read current content while holding lock
+            clearstatcache(true, $path);
+            $size = filesize($path);
+
+            if($size === false || $size === 0){
+                $currentData = $default;
+            } else {
+                rewind($fp);
+                $content = fread($fp, $size);
+                $currentData = ($content !== false && $content !== '')
+                    ? json_decode($content, true)
+                    : $default;
+
+                if($currentData === null && $content !== 'null'){
+                    $currentData = $default;
+                }
+            }
+
+            // Apply modification
+            $newData = $modifier($currentData);
+
+            // Write modified data
+            ftruncate($fp, 0);
+            rewind($fp);
+            $json = $prettyPrint
+                ? json_encode($newData, JSON_PRETTY_PRINT)
+                : json_encode($newData);
+            $written = fwrite($fp, $json);
+            fflush($fp);
+
+            if($written === false){
+                return ['success' => false, 'data' => null, 'error' => 'Failed to write data'];
+            }
+
+            return ['success' => true, 'data' => $newData, 'error' => null];
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+        }
     }
 
     // ==========================================
@@ -69,51 +277,73 @@ class noneDB {
     }
 
     /**
-     * Read shard metadata
+     * Read shard metadata with atomic locking
      * @param string $dbname
      * @return array|null
      */
     private function readMeta($dbname){
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $path = $this->getMetaPath($dbname);
-        if(!file_exists($path)) return null;
-        $content = file_get_contents($path);
-        return json_decode($content, true);
+        return $this->atomicRead($path, null);
     }
 
     /**
-     * Write shard metadata
+     * Write shard metadata with atomic locking
      * @param string $dbname
      * @param array $meta
+     * @return bool
      */
     private function writeMeta($dbname, $meta){
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $path = $this->getMetaPath($dbname);
-        file_put_contents($path, json_encode($meta, JSON_PRETTY_PRINT), LOCK_EX);
+        return $this->atomicWrite($path, $meta, true);
     }
 
     /**
-     * Get data from a specific shard
+     * Atomically modify shard metadata
+     * @param string $dbname
+     * @param callable $modifier
+     * @return array ['success' => bool, 'data' => modified meta, 'error' => string|null]
+     */
+    private function modifyMeta($dbname, callable $modifier){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $path = $this->getMetaPath($dbname);
+        return $this->atomicModify($path, $modifier, null, true);
+    }
+
+    /**
+     * Get data from a specific shard with atomic locking
      * @param string $dbname
      * @param int $shardId
      * @return array
      */
     private function getShardData($dbname, $shardId){
         $path = $this->getShardPath($dbname, $shardId);
-        if(!file_exists($path)) return array("data" => []);
-        $content = file_get_contents($path);
-        return json_decode($content, true);
+        return $this->atomicRead($path, array("data" => []));
     }
 
     /**
-     * Write data to a specific shard
+     * Write data to a specific shard with atomic locking
      * @param string $dbname
      * @param int $shardId
      * @param array $data
+     * @return bool
      */
     private function writeShardData($dbname, $shardId, $data){
         $path = $this->getShardPath($dbname, $shardId);
-        file_put_contents($path, json_encode($data), LOCK_EX);
+        return $this->atomicWrite($path, $data);
+    }
+
+    /**
+     * Atomically modify shard data
+     * @param string $dbname
+     * @param int $shardId
+     * @param callable $modifier
+     * @return array ['success' => bool, 'data' => modified data, 'error' => string|null]
+     */
+    private function modifyShardData($dbname, $shardId, callable $modifier){
+        $path = $this->getShardPath($dbname, $shardId);
+        return $this->atomicModify($path, $modifier, array("data" => []));
     }
 
     /**
@@ -220,7 +450,7 @@ class noneDB {
     }
 
     /**
-     * Insert data into sharded database
+     * Insert data into sharded database with atomic locking
      * @param string $dbname
      * @param array $data
      * @return array
@@ -229,37 +459,8 @@ class noneDB {
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $main_response = array("n" => 0);
 
-        $meta = $this->readMeta($dbname);
-        if($meta === null){
-            return $main_response;
-        }
-
-        // Get the last shard
-        $lastShardIdx = count($meta['shards']) - 1;
-        $lastShard = $meta['shards'][$lastShardIdx];
-        $shardId = $lastShard['id'];
-
-        // Calculate current count in last shard
-        $currentShardCount = $lastShard['count'] + $lastShard['deleted'];
-
-        // Check if we need a new shard
-        if($currentShardCount >= $this->shardSize){
-            $shardId++;
-            $meta['shards'][] = array(
-                "id" => $shardId,
-                "file" => "_s" . $shardId,
-                "count" => 0,
-                "deleted" => 0
-            );
-            $lastShardIdx = count($meta['shards']) - 1;
-            $currentShardCount = 0;
-        }
-
-        // Get shard data
-        $shardData = $this->getShardData($dbname, $shardId);
-        $insertedCount = 0;
-
-        // Check if data is a list of records
+        // Validate data first
+        $validItems = [];
         if($this->isRecordList($data)){
             foreach($data as $item){
                 if(!is_array($item)) continue;
@@ -267,13 +468,37 @@ class noneDB {
                     $main_response['error'] = "You cannot set key name to key";
                     return $main_response;
                 }
+                $validItems[] = $item;
+            }
+            if(empty($validItems)){
+                return array("n" => 0);
+            }
+        } else {
+            if($this->hasReservedKeyField($data)){
+                $main_response['error'] = "You cannot set key name to key";
+                return $main_response;
+            }
+            $validItems[] = $data;
+        }
 
-                // Check if current shard is full, create new one
-                if($currentShardCount >= $this->shardSize){
-                    // Write current shard
-                    $this->writeShardData($dbname, $shardId, $shardData);
-                    $meta['shards'][$lastShardIdx]['count'] += $insertedCount;
+        // Atomic insert using meta-level locking
+        $shardSize = $this->shardSize;
+        $insertedCount = 0;
+        $shardWrites = []; // Collect shard modifications
 
+        // Atomically update meta and calculate which shards to write
+        $metaResult = $this->modifyMeta($dbname, function($meta) use ($validItems, $shardSize, &$insertedCount, &$shardWrites) {
+            if($meta === null){
+                return null;
+            }
+
+            $lastShardIdx = count($meta['shards']) - 1;
+            $shardId = $meta['shards'][$lastShardIdx]['id'];
+            $currentShardCount = $meta['shards'][$lastShardIdx]['count'] + $meta['shards'][$lastShardIdx]['deleted'];
+
+            foreach($validItems as $item){
+                // Check if current shard is full
+                if($currentShardCount >= $shardSize){
                     // Create new shard
                     $shardId++;
                     $meta['shards'][] = array(
@@ -283,35 +508,45 @@ class noneDB {
                         "deleted" => 0
                     );
                     $lastShardIdx = count($meta['shards']) - 1;
-                    $shardData = array("data" => []);
                     $currentShardCount = 0;
-                    $insertedCount = 0;
                 }
 
-                $shardData['data'][] = $item;
+                // Track which items go to which shard
+                if(!isset($shardWrites[$shardId])){
+                    $shardWrites[$shardId] = ['items' => [], 'shardIdx' => $lastShardIdx];
+                }
+                $shardWrites[$shardId]['items'][] = $item;
                 $currentShardCount++;
                 $insertedCount++;
+
+                // Update meta counts
+                $meta['shards'][$lastShardIdx]['count']++;
+                $meta['totalRecords']++;
+                $meta['nextKey']++;
             }
-        } else {
-            // Single record
-            if($this->hasReservedKeyField($data)){
-                $main_response['error'] = "You cannot set key name to key";
-                return $main_response;
-            }
-            $shardData['data'][] = $data;
-            $insertedCount = 1;
+
+            return $meta;
+        });
+
+        if(!$metaResult['success'] || $metaResult['data'] === null){
+            $main_response['error'] = $metaResult['error'] ?? 'Meta update failed';
+            return $main_response;
         }
 
-        // Write final shard data
-        $this->writeShardData($dbname, $shardId, $shardData);
+        // Now atomically write to each affected shard
+        foreach($shardWrites as $shardId => $writeInfo){
+            $this->modifyShardData($dbname, $shardId, function($shardData) use ($writeInfo) {
+                if($shardData === null){
+                    $shardData = array("data" => []);
+                }
+                foreach($writeInfo['items'] as $item){
+                    $shardData['data'][] = $item;
+                }
+                return $shardData;
+            });
+        }
 
-        // Update meta
-        $meta['shards'][$lastShardIdx]['count'] += $insertedCount;
-        $meta['totalRecords'] += $insertedCount;
-        $meta['nextKey'] += $insertedCount;
-        $this->writeMeta($dbname, $meta);
-
-        return array("n" => ($this->isRecordList($data) ? $insertedCount : 1));
+        return array("n" => $insertedCount);
     }
 
     /**
@@ -397,7 +632,7 @@ class noneDB {
     }
 
     /**
-     * Update records in sharded database
+     * Update records in sharded database with atomic locking
      * @param string $dbname
      * @param array $data
      * @return array
@@ -406,52 +641,65 @@ class noneDB {
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $main_response = array("n" => 0);
 
-        // Find records to update
-        $find = $this->findSharded($dbname, $data[0]);
-        if($find === false || count($find) === 0){
-            return $main_response;
-        }
+        $filters = $data[0];
+        $setValues = $data[1]['set'];
+        $shardSize = $this->shardSize;
 
         $meta = $this->readMeta($dbname);
         if($meta === null){
             return $main_response;
         }
 
-        // Group updates by shard
-        $shardUpdates = [];
-        foreach($find as $record){
-            $globalKey = $record['key'];
-            $shardId = $this->getShardIdForKey($globalKey);
-            $localKey = $this->getLocalKey($globalKey);
+        // Update each shard atomically
+        $totalUpdated = 0;
+        foreach($meta['shards'] as $shard){
+            $shardId = $shard['id'];
+            $baseKey = $shardId * $shardSize;
+            $updatedInShard = 0;
 
-            if(!isset($shardUpdates[$shardId])){
-                $shardUpdates[$shardId] = [];
-            }
-            $shardUpdates[$shardId][$localKey] = $data[1]['set'];
-        }
-
-        // Apply updates to each shard
-        $updatedCount = 0;
-        foreach($shardUpdates as $shardId => $updates){
-            $shardData = $this->getShardData($dbname, $shardId);
-
-            foreach($updates as $localKey => $setValues){
-                if(isset($shardData['data'][$localKey]) && $shardData['data'][$localKey] !== null){
-                    foreach($setValues as $field => $value){
-                        $shardData['data'][$localKey][$field] = $value;
-                    }
-                    $updatedCount++;
+            $this->modifyShardData($dbname, $shardId, function($shardData) use ($filters, $setValues, $baseKey, &$updatedInShard) {
+                if($shardData === null || !isset($shardData['data'])){
+                    return array("data" => []);
                 }
-            }
 
-            $this->writeShardData($dbname, $shardId, $shardData);
+                foreach($shardData['data'] as $localKey => &$record){
+                    if($record === null) continue;
+
+                    // Check if record matches filters
+                    $match = true;
+                    foreach($filters as $filterKey => $filterValue){
+                        if($filterKey === 'key'){
+                            $globalKey = $baseKey + $localKey;
+                            // Support both single key and array of keys
+                            $targetKeys = is_array($filterValue) ? $filterValue : [$filterValue];
+                            if(!in_array($globalKey, $targetKeys)){
+                                $match = false;
+                                break;
+                            }
+                        } else if(!isset($record[$filterKey]) || $record[$filterKey] !== $filterValue){
+                            $match = false;
+                            break;
+                        }
+                    }
+
+                    if($match){
+                        foreach($setValues as $field => $value){
+                            $record[$field] = $value;
+                        }
+                        $updatedInShard++;
+                    }
+                }
+                return $shardData;
+            });
+
+            $totalUpdated += $updatedInShard;
         }
 
-        return array("n" => $updatedCount);
+        return array("n" => $totalUpdated);
     }
 
     /**
-     * Delete records from sharded database
+     * Delete records from sharded database with atomic locking
      * @param string $dbname
      * @param array $data
      * @return array
@@ -460,60 +708,82 @@ class noneDB {
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $main_response = array("n" => 0);
 
-        // Find records to delete
-        $find = $this->findSharded($dbname, $data);
-        if($find === false || count($find) === 0){
-            return $main_response;
-        }
+        $filters = $data;
+        $shardSize = $this->shardSize;
 
         $meta = $this->readMeta($dbname);
         if($meta === null){
             return $main_response;
         }
 
-        // Group deletes by shard
-        $shardDeletes = [];
-        foreach($find as $record){
-            $globalKey = $record['key'];
-            $shardId = $this->getShardIdForKey($globalKey);
-            $localKey = $this->getLocalKey($globalKey);
+        // Track deletions per shard for meta update
+        $shardDeletions = [];
+        $totalDeleted = 0;
 
-            if(!isset($shardDeletes[$shardId])){
-                $shardDeletes[$shardId] = [];
-            }
-            $shardDeletes[$shardId][] = $localKey;
-        }
+        // Delete from each shard atomically
+        foreach($meta['shards'] as $shard){
+            $shardId = $shard['id'];
+            $baseKey = $shardId * $shardSize;
+            $deletedInShard = 0;
 
-        // Apply deletes to each shard
-        $deletedCount = 0;
-        foreach($shardDeletes as $shardId => $localKeys){
-            $shardData = $this->getShardData($dbname, $shardId);
+            $this->modifyShardData($dbname, $shardId, function($shardData) use ($filters, $baseKey, &$deletedInShard) {
+                if($shardData === null || !isset($shardData['data'])){
+                    return array("data" => []);
+                }
 
-            foreach($localKeys as $localKey){
-                if(isset($shardData['data'][$localKey]) && $shardData['data'][$localKey] !== null){
-                    $shardData['data'][$localKey] = null;
-                    $deletedCount++;
+                foreach($shardData['data'] as $localKey => &$record){
+                    if($record === null) continue;
 
-                    // Update shard meta
-                    foreach($meta['shards'] as &$shard){
-                        if($shard['id'] === $shardId){
-                            $shard['count']--;
-                            $shard['deleted']++;
+                    // Check if record matches filters
+                    $match = true;
+                    foreach($filters as $filterKey => $filterValue){
+                        if($filterKey === 'key'){
+                            $globalKey = $baseKey + $localKey;
+                            // Support both single key and array of keys
+                            $targetKeys = is_array($filterValue) ? $filterValue : [$filterValue];
+                            if(!in_array($globalKey, $targetKeys)){
+                                $match = false;
+                                break;
+                            }
+                        } else if(!isset($record[$filterKey]) || $record[$filterKey] !== $filterValue){
+                            $match = false;
                             break;
                         }
                     }
-                }
-            }
 
-            $this->writeShardData($dbname, $shardId, $shardData);
+                    if($match){
+                        $shardData['data'][$localKey] = null;
+                        $deletedInShard++;
+                    }
+                }
+                return $shardData;
+            });
+
+            if($deletedInShard > 0){
+                $shardDeletions[$shardId] = $deletedInShard;
+                $totalDeleted += $deletedInShard;
+            }
         }
 
-        // Update meta
-        $meta['totalRecords'] -= $deletedCount;
-        $meta['deletedCount'] += $deletedCount;
-        $this->writeMeta($dbname, $meta);
+        // Atomically update meta with deletion counts
+        if($totalDeleted > 0){
+            $this->modifyMeta($dbname, function($meta) use ($shardDeletions, $totalDeleted) {
+                if($meta === null) return null;
 
-        return array("n" => $deletedCount);
+                foreach($meta['shards'] as &$shard){
+                    if(isset($shardDeletions[$shard['id']])){
+                        $shard['count'] -= $shardDeletions[$shard['id']];
+                        $shard['deleted'] += $shardDeletions[$shard['id']];
+                    }
+                }
+
+                $meta['totalRecords'] -= $totalDeleted;
+                $meta['deletedCount'] = ($meta['deletedCount'] ?? 0) + $totalDeleted;
+                return $meta;
+            });
+        }
+
+        return array("n" => $totalDeleted);
     }
 
     /**
@@ -624,6 +894,7 @@ class noneDB {
             $fullDBPath=$this->dbDir.$dbnameHashed."-".$specificDb.".nonedb";
             if(file_exists($fullDBPathInfo)){
                 $dbInfo = fopen($fullDBPathInfo, "r");
+                clearstatcache(true, $fullDBPath); // Clear cache before getting file size
                 $db= array("name"=>$specificDb, "createdTime"=>(int)fgets($dbInfo), "size"=>$this->fileSizeConvert(filesize($fullDBPath)));
                 fclose($dbInfo);
                 return $db;
@@ -683,51 +954,36 @@ class noneDB {
 
 
     /**
-     * get data from db file
+     * Get data from db file with atomic locking
      * @param string $fullDBPath
-     * @param int $retryCount
+     * @param int $retryCount (deprecated, kept for compatibility)
+     * @return array|false
      */
     private function getData($fullDBPath, $retryCount = 0){
-        clearstatcache(true, $fullDBPath);
-        if (is_readable($fullDBPath)) {
-            $size = filesize($fullDBPath);
-            if($size === 0){
-                return array("data" => []);
-            }
-            $dosya = fopen( $fullDBPath, "rb" );
-            if( $dosya === false ) {
-                    return false;
-            }
-            $dbContents = json_decode(fread( $dosya, $size), true);
-            fclose($dosya);
-            return $dbContents;
-        }else{
-            if($retryCount >= 5){
-                return false;
-            }
-            usleep(10000); // 10ms bekle
-            return $this->getData($fullDBPath, $retryCount + 1);
-        }
+        $result = $this->atomicRead($fullDBPath, array("data" => []));
+        return $result !== null ? $result : false;
     }
 
     /**
-     * insert data to db file
+     * Insert/write data to db file with atomic locking
      * @param string $fullDBPath is db path with file name
      * @param array $buffer is full data
-     * @param int $retryCount
+     * @param int $retryCount (deprecated, kept for compatibility)
+     * @return bool
      */
     private function insertData($fullDBPath, $buffer, $retryCount = 0){
-        clearstatcache(true, $fullDBPath);
-        if (is_writable($fullDBPath)) {
-            file_put_contents($fullDBPath, json_encode($buffer), LOCK_EX);
-            return true;
-        }else{
-            if($retryCount >= 5){
-                return false;
-            }
-            usleep(10000); // 10ms bekle
-            return $this->insertData($fullDBPath, $buffer, $retryCount + 1);
-        }
+        return $this->atomicWrite($fullDBPath, $buffer);
+    }
+
+    /**
+     * Atomically modify database file: read, apply callback, write
+     * This prevents race conditions in concurrent access
+     * @param string $fullDBPath
+     * @param callable $modifier
+     * @return array ['success' => bool, 'data' => modified data, 'error' => string|null]
+     */
+    private function modifyData($fullDBPath, callable $modifier){
+        return $this->atomicModify($fullDBPath, $modifier, array("data" => []));
     }
 
     /**
@@ -872,15 +1128,10 @@ class noneDB {
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
-        $buffer = $this->getData($fullDBPath);
-        if($buffer === false){
-            $buffer = array("data" => []);
-        }
-
-        // Check if data is a list of records or a single record
+        // Validate data before atomic operation
         if($this->isRecordList($data)){
-            // Multiple records to insert
-            $countData = 0;
+            // Validate all items first
+            $validItems = [];
             foreach($data as $item){
                 if(!is_array($item)){
                     continue;
@@ -889,28 +1140,59 @@ class noneDB {
                     $main_response['error']="You cannot set key name to key";
                     return $main_response;
                 }
-                $buffer['data'][]=$item;
-                $countData++;
+                $validItems[] = $item;
             }
-            $this->insertData($fullDBPath, $buffer);
+
+            if(empty($validItems)){
+                return array("n"=>0);
+            }
+
+            // Atomic insert - read, modify, write in single locked operation
+            $countData = count($validItems);
+            $result = $this->modifyData($fullDBPath, function($buffer) use ($validItems) {
+                if($buffer === null){
+                    $buffer = array("data" => []);
+                }
+                foreach($validItems as $item){
+                    $buffer['data'][] = $item;
+                }
+                return $buffer;
+            });
+
+            if(!$result['success']){
+                $main_response['error'] = $result['error'] ?? 'Insert failed';
+                return $main_response;
+            }
 
             // Auto-migrate to sharded format if threshold reached
-            if($this->shardingEnabled && $this->autoMigrate && count($buffer['data']) >= $this->shardSize){
+            if($this->shardingEnabled && $this->autoMigrate && count($result['data']['data']) >= $this->shardSize){
                 $this->migrateToSharded($dbname);
             }
 
             return array("n"=>$countData);
         }else{
-            // Single record to insert
+            // Single record validation
             if($this->hasReservedKeyField($data)){
                 $main_response['error']="You cannot set key name to key";
                 return $main_response;
             }
-            $buffer['data'][]=$data;
-            $this->insertData($fullDBPath, $buffer);
+
+            // Atomic insert - read, modify, write in single locked operation
+            $result = $this->modifyData($fullDBPath, function($buffer) use ($data) {
+                if($buffer === null){
+                    $buffer = array("data" => []);
+                }
+                $buffer['data'][] = $data;
+                return $buffer;
+            });
+
+            if(!$result['success']){
+                $main_response['error'] = $result['error'] ?? 'Insert failed';
+                return $main_response;
+            }
 
             // Auto-migrate to sharded format if threshold reached
-            if($this->shardingEnabled && $this->autoMigrate && count($buffer['data']) >= $this->shardSize){
+            if($this->shardingEnabled && $this->autoMigrate && count($result['data']['data']) >= $this->shardSize){
                 $this->migrateToSharded($dbname);
             }
 
@@ -940,21 +1222,48 @@ class noneDB {
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
-        $find=$this->find($dbname, $data);
-        if($find === false){
+        // Use atomic modify to find and delete in single locked operation
+        $filters = $data;
+        $deletedCount = 0;
+
+        $result = $this->modifyData($fullDBPath, function($buffer) use ($filters, &$deletedCount) {
+            if($buffer === null || !isset($buffer['data'])){
+                return array("data" => []);
+            }
+
+            // Find matching records within the lock
+            foreach($buffer['data'] as $key => $record){
+                if($record === null) continue;
+
+                $match = true;
+                foreach($filters as $filterKey => $filterValue){
+                    // Special handling for 'key' filter
+                    if($filterKey === 'key'){
+                        // Support both single key and array of keys
+                        $targetKeys = is_array($filterValue) ? $filterValue : [$filterValue];
+                        if(!in_array($key, $targetKeys)){
+                            $match = false;
+                            break;
+                        }
+                    } else if(!isset($record[$filterKey]) || $record[$filterKey] !== $filterValue){
+                        $match = false;
+                        break;
+                    }
+                }
+                if($match){
+                    $buffer['data'][$key] = null;
+                    $deletedCount++;
+                }
+            }
+            return $buffer;
+        });
+
+        if(!$result['success']){
+            $main_response['error'] = $result['error'] ?? 'Delete failed';
             return $main_response;
         }
-        if(count($find)>0){
-            $buffer = $this->getData($fullDBPath);
-            if($buffer === false){
-                return $main_response;
-            }
-            foreach($find as $row){
-               $buffer['data'][$row['key']]=null;
-            }
-            $this->insertData($fullDBPath, $buffer);
-            $main_response['n']=count($find);
-        }
+
+        $main_response['n'] = $deletedCount;
         return $main_response;
     }
 
@@ -980,23 +1289,51 @@ class noneDB {
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
-        $find=$this->find($dbname, $data[0]);
-        if($find === false){
-            return $main_response;
-        }
-        if(count($find)>0){
-            $buffer = $this->getData($fullDBPath);
-            if($buffer === false){
-                return $main_response;
+        // Use atomic modify to find and update in single locked operation
+        $filters = $data[0];
+        $setData = $data[1]['set'];
+        $updatedCount = 0;
+
+        $result = $this->modifyData($fullDBPath, function($buffer) use ($filters, $setData, &$updatedCount) {
+            if($buffer === null || !isset($buffer['data'])){
+                return array("data" => []);
             }
-            foreach($find as $row){
-                foreach($data[1]['set'] as $key=>$set){
-                    $buffer['data'][$row['key']][$key]=$set;
+
+            // Find matching records within the lock
+            foreach($buffer['data'] as $key => $record){
+                if($record === null) continue;
+
+                $match = true;
+                foreach($filters as $filterKey => $filterValue){
+                    // Special handling for 'key' filter
+                    if($filterKey === 'key'){
+                        // Support both single key and array of keys
+                        $targetKeys = is_array($filterValue) ? $filterValue : [$filterValue];
+                        if(!in_array($key, $targetKeys)){
+                            $match = false;
+                            break;
+                        }
+                    } else if(!isset($record[$filterKey]) || $record[$filterKey] !== $filterValue){
+                        $match = false;
+                        break;
+                    }
+                }
+                if($match){
+                    foreach($setData as $setKey => $setValue){
+                        $buffer['data'][$key][$setKey] = $setValue;
+                    }
+                    $updatedCount++;
                 }
             }
-            $this->insertData($fullDBPath, $buffer);
-            $main_response['n']=count($find);
+            return $buffer;
+        });
+
+        if(!$result['success']){
+            $main_response['error'] = $result['error'] ?? 'Update failed';
+            return $main_response;
         }
+
+        $main_response['n'] = $updatedCount;
         return $main_response;
     }
 

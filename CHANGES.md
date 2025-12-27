@@ -1,5 +1,77 @@
 # noneDB Changelog
 
+## v2.2.0 (2025-12-27)
+
+### Major: Atomic File Locking
+
+This release implements **professional-grade atomic file locking** to ensure thread-safe concurrent access. No more lost updates or race conditions!
+
+#### New Core Methods
+
+Three new private methods handle all file operations atomically:
+
+```php
+// Atomic read with shared lock (LOCK_SH)
+private function atomicRead($path, $default = null)
+
+// Atomic write with exclusive lock (LOCK_EX)
+private function atomicWrite($path, $data, $prettyPrint = false)
+
+// Atomic read-modify-write in single locked operation
+private function atomicModify($path, callable $modifier, $default = null)
+```
+
+#### How It Works
+
+```
+┌───────────────────────────────────────────────────────────┐
+│  Before v2.2 (Race Condition)                             │
+├───────────────────────────────────────────────────────────┤
+│  Process A: read → modify → write                         │
+│  Process B:    read → modify → write                      │
+│  Result: Process A's changes LOST!                        │
+└───────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────┐
+│  After v2.2 (Atomic Operations)                           │
+├───────────────────────────────────────────────────────────┤
+│  Process A: [LOCK → read → modify → write → UNLOCK]       │
+│  Process B:        [wait...] [LOCK → read → modify → ...]│
+│  Result: ALL changes preserved!                           │
+└───────────────────────────────────────────────────────────┘
+```
+
+#### Test Results
+
+| Scenario | Before v2.2 | After v2.2 |
+|----------|-------------|------------|
+| 2 processes × 100 inserts | 46-199 records (up to 77% loss) | **200/200** (0% loss) |
+| 5 processes × 50 inserts | 41 records (83.6% loss!) | **250/250** (0% loss) |
+
+#### Updated Methods
+
+All write operations now use atomic locking:
+- `insert()`, `update()`, `delete()`
+- `insertSharded()`, `updateSharded()`, `deleteSharded()`
+- `readMeta()`, `writeMeta()`, `getShardData()`, `writeShardData()`
+
+#### Configuration
+
+New configuration options for fine-tuning:
+
+```php
+private $lockTimeout = 5;        // Max seconds to wait for lock
+private $lockRetryDelay = 10000; // Microseconds between retry attempts
+```
+
+### Performance Benchmarks Updated
+
+Added 500K record benchmarks. Key highlights:
+- `find(key)` stays at **23ms** even at 500K records (thanks to sharding)
+- Full table operations scale linearly (~3-5s for 500K records)
+
+---
+
 ## v2.1.0 (2025-12-27)
 
 ### New Features
