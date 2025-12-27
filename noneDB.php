@@ -1072,7 +1072,11 @@ class noneDB {
         }
 
         foreach($all as $record){
-            if(isset($record[$field]) && preg_match($regex, (string)$record[$field])){
+            if(!isset($record[$field])) continue;
+            $value = $record[$field];
+            // Skip arrays and objects - can't do string matching on them
+            if(is_array($value) || is_object($value)) continue;
+            if(preg_match($regex, (string)$value)){
                 $result[] = $record;
             }
         }
@@ -1557,13 +1561,16 @@ class noneDBQuery {
         foreach ($this->likeFilters as $like) {
             $results = array_filter($results, function($record) use ($like) {
                 if (!isset($record[$like['field']])) return false;
+                $value = $record[$like['field']];
+                // Skip arrays and objects - can't do string matching on them
+                if (is_array($value) || is_object($value)) return false;
                 $pattern = $like['pattern'];
                 if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
                     $regex = '/' . $pattern . '/i';
                 } else {
                     $regex = '/' . preg_quote($pattern, '/') . '/i';
                 }
-                return preg_match($regex, (string)$record[$like['field']]);
+                return preg_match($regex, (string)$value);
             });
             $results = array_values($results);
         }
