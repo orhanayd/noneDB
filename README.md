@@ -1,8 +1,9 @@
 # noneDB
 
+[![Version](https://img.shields.io/badge/version-2.0.0-orange.svg)](CHANGES.md)
 [![PHP Version](https://img.shields.io/badge/PHP-7.4%2B-blue.svg)](https://php.net)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://github.com/orhanayd/noneDB/actions/workflows/tests.yml/badge.svg)](https://github.com/orhanayd/noneDB/actions)
+[![Tests](https://img.shields.io/badge/tests-448%20passed-brightgreen.svg)](tests/)
 
 **noneDB** is a lightweight, file-based NoSQL database for PHP. No installation required - just include and go!
 
@@ -551,6 +552,8 @@ $result = $db->compact("users");
 // ["success" => false, "status" => "read_error"]
 ```
 
+> **Recommendation:** We strongly recommend running `compact()` periodically (e.g., via cron job) on databases with frequent delete operations. Deleted records leave `null` entries in the data file, which waste disk space and slightly slow down read operations. Regular compaction keeps your database healthy and performant.
+
 #### migrate($dbname)
 
 Manually trigger migration to sharded format (normally happens automatically).
@@ -694,7 +697,7 @@ Tested on PHP 8.2, macOS (Apple Silicon)
 - No transactions support
 - No foreign key constraints
 - Concurrent writes use file locking but race conditions possible
-- Deleted records leave `null` entries (use `compact()` to reclaim space)
+- Deleted records leave `null` entries - run [`compact()`](#compactdbname) periodically to reclaim space
 
 ### Character Encoding
 - Database names: Only `A-Z`, `a-z`, `0-9`, space, hyphen, apostrophe allowed
