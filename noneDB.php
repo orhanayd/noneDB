@@ -1429,5 +1429,336 @@ class noneDB {
     public function getShardSize(){
         return $this->shardSize;
     }
+
+    // ==========================================
+    // QUERY BUILDER (FLUENT INTERFACE)
+    // ==========================================
+
+    /**
+     * Create a new query builder for fluent interface
+     * @param string $dbname
+     * @return noneDBQuery
+     */
+    public function query(string $dbname): noneDBQuery {
+        return new noneDBQuery($this, $dbname);
+    }
+}
+
+/**
+ * Query Builder for noneDB - Fluent Interface
+ *
+ * Allows method chaining for queries:
+ * $db->query("users")->where(["active" => true])->sort("name")->limit(10)->get();
+ */
+class noneDBQuery {
+    private noneDB $db;
+    private string $dbname;
+    private array $whereFilters = [];
+    private array $likeFilters = [];
+    private array $betweenFilters = [];
+    private ?string $sortField = null;
+    private string $sortOrder = 'asc';
+    private ?int $limitCount = null;
+    private int $offsetCount = 0;
+
+    /**
+     * @param noneDB $db
+     * @param string $dbname
+     */
+    public function __construct(noneDB $db, string $dbname) {
+        $this->db = $db;
+        $this->dbname = $dbname;
+    }
+
+    // ==========================================
+    // CHAINABLE METHODS (return $this)
+    // ==========================================
+
+    /**
+     * Add where filter (AND condition)
+     * @param array $filters
+     * @return self
+     */
+    public function where(array $filters): self {
+        $this->whereFilters = array_merge($this->whereFilters, $filters);
+        return $this;
+    }
+
+    /**
+     * Add pattern matching filter
+     * @param string $field
+     * @param string $pattern Use ^ for starts with, $ for ends with
+     * @return self
+     */
+    public function like(string $field, string $pattern): self {
+        $this->likeFilters[] = ['field' => $field, 'pattern' => $pattern];
+        return $this;
+    }
+
+    /**
+     * Add range filter (min <= value <= max)
+     * @param string $field
+     * @param mixed $min
+     * @param mixed $max
+     * @return self
+     */
+    public function between(string $field, $min, $max): self {
+        $this->betweenFilters[] = ['field' => $field, 'min' => $min, 'max' => $max];
+        return $this;
+    }
+
+    /**
+     * Set sort order
+     * @param string $field
+     * @param string $order 'asc' or 'desc'
+     * @return self
+     */
+    public function sort(string $field, string $order = 'asc'): self {
+        $this->sortField = $field;
+        $this->sortOrder = $order;
+        return $this;
+    }
+
+    /**
+     * Limit results
+     * @param int $count
+     * @return self
+     */
+    public function limit(int $count): self {
+        $this->limitCount = $count;
+        return $this;
+    }
+
+    /**
+     * Skip first N results (for pagination)
+     * @param int $count
+     * @return self
+     */
+    public function offset(int $count): self {
+        $this->offsetCount = $count;
+        return $this;
+    }
+
+    // ==========================================
+    // TERMINAL METHODS (execute and return result)
+    // ==========================================
+
+    /**
+     * Execute query and get all results
+     * @return array
+     */
+    public function get(): array {
+        // 1. Base query with where filters
+        $filters = count($this->whereFilters) > 0 ? $this->whereFilters : 0;
+        $results = $this->db->find($this->dbname, $filters);
+        if ($results === false) return [];
+
+        // 2. Apply like filters
+        foreach ($this->likeFilters as $like) {
+            $results = array_filter($results, function($record) use ($like) {
+                if (!isset($record[$like['field']])) return false;
+                $pattern = $like['pattern'];
+                if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
+                    $regex = '/' . $pattern . '/i';
+                } else {
+                    $regex = '/' . preg_quote($pattern, '/') . '/i';
+                }
+                return preg_match($regex, (string)$record[$like['field']]);
+            });
+            $results = array_values($results);
+        }
+
+        // 3. Apply between filters
+        foreach ($this->betweenFilters as $between) {
+            $results = array_filter($results, function($record) use ($between) {
+                if (!isset($record[$between['field']])) return false;
+                $value = $record[$between['field']];
+                return $value >= $between['min'] && $value <= $between['max'];
+            });
+            $results = array_values($results);
+        }
+
+        // 4. Sort
+        if ($this->sortField !== null && count($results) > 0) {
+            $sorted = $this->db->sort($results, $this->sortField, $this->sortOrder);
+            if ($sorted !== false) {
+                $results = $sorted;
+            }
+        }
+
+        // 5. Offset + Limit
+        if ($this->offsetCount > 0 || $this->limitCount !== null) {
+            $results = array_slice($results, $this->offsetCount, $this->limitCount);
+        }
+
+        return $results;
+    }
+
+    /**
+     * Get first matching record
+     * @return array|null
+     */
+    public function first(): ?array {
+        $originalLimit = $this->limitCount;
+        $this->limitCount = 1;
+        $results = $this->get();
+        $this->limitCount = $originalLimit;
+        return $results[0] ?? null;
+    }
+
+    /**
+     * Get last matching record
+     * @return array|null
+     */
+    public function last(): ?array {
+        $results = $this->get();
+        return count($results) > 0 ? $results[count($results) - 1] : null;
+    }
+
+    /**
+     * Count matching records
+     * @return int
+     */
+    public function count(): int {
+        return count($this->get());
+    }
+
+    /**
+     * Check if any records match
+     * @return bool
+     */
+    public function exists(): bool {
+        $originalLimit = $this->limitCount;
+        $this->limitCount = 1;
+        $count = count($this->get());
+        $this->limitCount = $originalLimit;
+        return $count > 0;
+    }
+
+    // ==========================================
+    // AGGREGATION METHODS
+    // ==========================================
+
+    /**
+     * Sum of field values
+     * @param string $field
+     * @return float
+     */
+    public function sum(string $field): float {
+        $results = $this->get();
+        $sum = 0;
+        foreach ($results as $record) {
+            if (isset($record[$field]) && is_numeric($record[$field])) {
+                $sum += $record[$field];
+            }
+        }
+        return $sum;
+    }
+
+    /**
+     * Average of field values
+     * @param string $field
+     * @return float
+     */
+    public function avg(string $field): float {
+        $results = $this->get();
+        $sum = 0;
+        $count = 0;
+        foreach ($results as $record) {
+            if (isset($record[$field]) && is_numeric($record[$field])) {
+                $sum += $record[$field];
+                $count++;
+            }
+        }
+        return $count > 0 ? $sum / $count : 0;
+    }
+
+    /**
+     * Minimum value of field
+     * @param string $field
+     * @return mixed|null
+     */
+    public function min(string $field) {
+        $results = $this->get();
+        $min = null;
+        foreach ($results as $record) {
+            if (isset($record[$field])) {
+                if ($min === null || $record[$field] < $min) {
+                    $min = $record[$field];
+                }
+            }
+        }
+        return $min;
+    }
+
+    /**
+     * Maximum value of field
+     * @param string $field
+     * @return mixed|null
+     */
+    public function max(string $field) {
+        $results = $this->get();
+        $max = null;
+        foreach ($results as $record) {
+            if (isset($record[$field])) {
+                if ($max === null || $record[$field] > $max) {
+                    $max = $record[$field];
+                }
+            }
+        }
+        return $max;
+    }
+
+    /**
+     * Get unique values of field
+     * @param string $field
+     * @return array
+     */
+    public function distinct(string $field): array {
+        $results = $this->get();
+        $values = [];
+        foreach ($results as $record) {
+            if (isset($record[$field]) && !in_array($record[$field], $values, true)) {
+                $values[] = $record[$field];
+            }
+        }
+        return $values;
+    }
+
+    // ==========================================
+    // WRITE METHODS
+    // ==========================================
+
+    /**
+     * Update matching records
+     * @param array $set Fields to update
+     * @return array ["n" => count]
+     */
+    public function update(array $set): array {
+        $results = $this->get();
+        if (count($results) === 0) {
+            return ['n' => 0];
+        }
+
+        $keys = array_map(fn($r) => $r['key'], $results);
+        return $this->db->update($this->dbname, [
+            ['key' => $keys],
+            ['set' => $set]
+        ]);
+    }
+
+    /**
+     * Delete matching records
+     * @return array ["n" => count]
+     */
+    public function delete(): array {
+        $results = $this->get();
+        if (count($results) === 0) {
+            return ['n' => 0];
+        }
+
+        $keys = array_map(fn($r) => $r['key'], $results);
+        return $this->db->delete($this->dbname, ['key' => $keys]);
+    }
 }
 ?>

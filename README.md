@@ -15,6 +15,7 @@
 - Auto-create databases
 - Secure hashed file names
 - File locking for concurrent access
+- **Method chaining** (fluent interface) for clean queries
 - **Auto-sharding** for large datasets (100K+ records)
 
 ## Requirements
@@ -375,6 +376,98 @@ Check if records exist.
 if ($db->exists("users", ["email" => "john@test.com"])) {
     echo "User exists!";
 }
+```
+
+---
+
+## Method Chaining (Fluent Interface)
+
+noneDB supports fluent method chaining for building complex queries with clean, readable syntax.
+
+### Basic Usage
+
+```php
+// Old API (still works)
+$results = $db->find("users", ["active" => true]);
+$sorted = $db->sort($results, "score", "desc");
+$limited = $db->limit($sorted, 10);
+
+// New Fluent API
+$results = $db->query("users")
+    ->where(["active" => true])
+    ->sort("score", "desc")
+    ->limit(10)
+    ->get();
+```
+
+### Chainable Methods
+
+| Method | Description | Example |
+|--------|-------------|---------|
+| `where($filters)` | Filter by field values | `->where(["active" => true])` |
+| `like($field, $pattern)` | Pattern matching (^start, end$) | `->like("email", "gmail")` |
+| `between($field, $min, $max)` | Range filter | `->between("age", 18, 65)` |
+| `sort($field, $order)` | Sort results | `->sort("created_at", "desc")` |
+| `limit($count)` | Limit results | `->limit(10)` |
+| `offset($count)` | Skip results (pagination) | `->offset(20)` |
+
+### Terminal Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get()` | `array` | All matching records |
+| `first()` | `?array` | First record or null |
+| `last()` | `?array` | Last record or null |
+| `count()` | `int` | Number of matches |
+| `exists()` | `bool` | True if any match |
+| `sum($field)` | `float` | Sum of field values |
+| `avg($field)` | `float` | Average of field |
+| `min($field)` | `mixed` | Minimum value |
+| `max($field)` | `mixed` | Maximum value |
+| `distinct($field)` | `array` | Unique values |
+| `update($set)` | `array` | Update matches |
+| `delete()` | `array` | Delete matches |
+
+### Examples
+
+```php
+// Complex query
+$topUsers = $db->query("users")
+    ->where(["active" => true])
+    ->between("age", 18, 35)
+    ->like("email", "gmail.com$")
+    ->sort("score", "desc")
+    ->limit(10)
+    ->get();
+
+// Aggregation
+$avgSalary = $db->query("employees")
+    ->where(["department" => "Engineering"])
+    ->avg("salary");
+
+// Existence check
+if ($db->query("users")->where(["email" => $email])->exists()) {
+    echo "Email already registered!";
+}
+
+// Update with chain
+$db->query("users")
+    ->where(["status" => "pending"])
+    ->update(["status" => "active"]);
+
+// Delete with chain
+$db->query("logs")
+    ->where(["level" => "debug"])
+    ->delete();
+
+// Pagination
+$page = 2;
+$perPage = 20;
+$users = $db->query("users")
+    ->sort("created_at", "desc")
+    ->limit($perPage)
+    ->offset(($page - 1) * $perPage)
+    ->get();
 ```
 
 ---
