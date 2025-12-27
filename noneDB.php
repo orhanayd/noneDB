@@ -1458,8 +1458,20 @@ class noneDBQuery {
     private noneDB $db;
     private string $dbname;
     private array $whereFilters = [];
+    private array $orWhereFilters = [];
+    private array $whereInFilters = [];
+    private array $whereNotInFilters = [];
+    private array $whereNotFilters = [];
     private array $likeFilters = [];
+    private array $notLikeFilters = [];
     private array $betweenFilters = [];
+    private array $notBetweenFilters = [];
+    private array $selectFields = [];
+    private array $exceptFields = [];
+    private ?string $groupByField = null;
+    private array $havingFilters = [];
+    private array $searchFilters = [];
+    private array $joinConfigs = [];
     private ?string $sortField = null;
     private string $sortOrder = 'asc';
     private ?int $limitCount = null;
@@ -1543,6 +1555,165 @@ class noneDBQuery {
         return $this;
     }
 
+    /**
+     * Alias for offset() - skip first N results
+     * @param int $count
+     * @return self
+     */
+    public function skip(int $count): self {
+        return $this->offset($count);
+    }
+
+    /**
+     * Alias for sort() - set sort order
+     * @param string $field
+     * @param string $order 'asc' or 'desc'
+     * @return self
+     */
+    public function orderBy(string $field, string $order = 'asc'): self {
+        return $this->sort($field, $order);
+    }
+
+    /**
+     * Add OR where filter
+     * @param array $filters
+     * @return self
+     */
+    public function orWhere(array $filters): self {
+        $this->orWhereFilters[] = $filters;
+        return $this;
+    }
+
+    /**
+     * Filter where field value is in given array
+     * @param string $field
+     * @param array $values
+     * @return self
+     */
+    public function whereIn(string $field, array $values): self {
+        $this->whereInFilters[] = ['field' => $field, 'values' => $values];
+        return $this;
+    }
+
+    /**
+     * Filter where field value is NOT in given array
+     * @param string $field
+     * @param array $values
+     * @return self
+     */
+    public function whereNotIn(string $field, array $values): self {
+        $this->whereNotInFilters[] = ['field' => $field, 'values' => $values];
+        return $this;
+    }
+
+    /**
+     * Filter where field value does NOT match
+     * @param array $filters
+     * @return self
+     */
+    public function whereNot(array $filters): self {
+        $this->whereNotFilters = array_merge($this->whereNotFilters, $filters);
+        return $this;
+    }
+
+    /**
+     * Filter where field does NOT match pattern
+     * @param string $field
+     * @param string $pattern
+     * @return self
+     */
+    public function notLike(string $field, string $pattern): self {
+        $this->notLikeFilters[] = ['field' => $field, 'pattern' => $pattern];
+        return $this;
+    }
+
+    /**
+     * Filter where field value is NOT between min and max
+     * @param string $field
+     * @param mixed $min
+     * @param mixed $max
+     * @return self
+     */
+    public function notBetween(string $field, $min, $max): self {
+        $this->notBetweenFilters[] = ['field' => $field, 'min' => $min, 'max' => $max];
+        return $this;
+    }
+
+    /**
+     * Select only specific fields in results
+     * @param array $fields
+     * @return self
+     */
+    public function select(array $fields): self {
+        $this->selectFields = $fields;
+        return $this;
+    }
+
+    /**
+     * Exclude specific fields from results
+     * @param array $fields
+     * @return self
+     */
+    public function except(array $fields): self {
+        $this->exceptFields = $fields;
+        return $this;
+    }
+
+    /**
+     * Group results by field
+     * @param string $field
+     * @return self
+     */
+    public function groupBy(string $field): self {
+        $this->groupByField = $field;
+        return $this;
+    }
+
+    /**
+     * Filter groups by aggregate condition
+     * @param string $aggregate 'count', 'sum:field', 'avg:field', 'min:field', 'max:field'
+     * @param string $operator '>', '<', '>=', '<=', '=', '!='
+     * @param mixed $value
+     * @return self
+     */
+    public function having(string $aggregate, string $operator, $value): self {
+        $this->havingFilters[] = [
+            'aggregate' => $aggregate,
+            'operator' => $operator,
+            'value' => $value
+        ];
+        return $this;
+    }
+
+    /**
+     * Full-text search across multiple fields
+     * @param string $term Search term
+     * @param array $fields Fields to search in (empty = all string fields)
+     * @return self
+     */
+    public function search(string $term, array $fields = []): self {
+        $this->searchFilters[] = ['term' => $term, 'fields' => $fields];
+        return $this;
+    }
+
+    /**
+     * Join with another database
+     * @param string $foreignDb Foreign database name
+     * @param string $localKey Local key field
+     * @param string $foreignKey Foreign key field
+     * @param string|null $alias Alias for joined data (default: foreignDb name)
+     * @return self
+     */
+    public function join(string $foreignDb, string $localKey, string $foreignKey, ?string $alias = null): self {
+        $this->joinConfigs[] = [
+            'foreignDb' => $foreignDb,
+            'localKey' => $localKey,
+            'foreignKey' => $foreignKey,
+            'alias' => $alias ?? $foreignDb
+        ];
+        return $this;
+    }
+
     // ==========================================
     // TERMINAL METHODS (execute and return result)
     // ==========================================
@@ -1552,17 +1723,86 @@ class noneDBQuery {
      * @return array
      */
     public function get(): array {
-        // 1. Base query with where filters
-        $filters = count($this->whereFilters) > 0 ? $this->whereFilters : 0;
-        $results = $this->db->find($this->dbname, $filters);
-        if ($results === false) return [];
+        // 1. Base query - get all records first if we have OR conditions
+        if (count($this->orWhereFilters) > 0) {
+            // With OR conditions, we need all records first
+            $results = $this->db->find($this->dbname, 0);
+            if ($results === false) return [];
 
-        // 2. Apply like filters
+            // Apply WHERE + OR WHERE logic
+            $results = array_filter($results, function($record) {
+                // Check main WHERE filters (AND logic)
+                $matchesWhere = true;
+                if (count($this->whereFilters) > 0) {
+                    foreach ($this->whereFilters as $field => $value) {
+                        if (!array_key_exists($field, $record) || $record[$field] !== $value) {
+                            $matchesWhere = false;
+                            break;
+                        }
+                    }
+                }
+
+                // Check OR WHERE filters
+                $matchesOrWhere = false;
+                foreach ($this->orWhereFilters as $orFilter) {
+                    $orMatch = true;
+                    foreach ($orFilter as $field => $value) {
+                        if (!array_key_exists($field, $record) || $record[$field] !== $value) {
+                            $orMatch = false;
+                            break;
+                        }
+                    }
+                    if ($orMatch) {
+                        $matchesOrWhere = true;
+                        break;
+                    }
+                }
+
+                // Record matches if (WHERE conditions match) OR (any OR WHERE matches)
+                return $matchesWhere || $matchesOrWhere;
+            });
+            $results = array_values($results);
+        } else {
+            // No OR conditions, use standard WHERE
+            $filters = count($this->whereFilters) > 0 ? $this->whereFilters : 0;
+            $results = $this->db->find($this->dbname, $filters);
+            if ($results === false) return [];
+        }
+
+        // 2. Apply whereNot filters
+        foreach ($this->whereNotFilters as $field => $value) {
+            $results = array_filter($results, function($record) use ($field, $value) {
+                if (!array_key_exists($field, $record)) return true;
+                return $record[$field] !== $value;
+            });
+            $results = array_values($results);
+        }
+
+        // 3. Apply whereIn filters
+        foreach ($this->whereInFilters as $filter) {
+            $results = array_filter($results, function($record) use ($filter) {
+                // Use array_key_exists instead of isset to handle null values
+                if (!array_key_exists($filter['field'], $record)) return false;
+                return in_array($record[$filter['field']], $filter['values'], true);
+            });
+            $results = array_values($results);
+        }
+
+        // 4. Apply whereNotIn filters
+        foreach ($this->whereNotInFilters as $filter) {
+            $results = array_filter($results, function($record) use ($filter) {
+                // Use array_key_exists instead of isset to handle null values
+                if (!array_key_exists($filter['field'], $record)) return true;
+                return !in_array($record[$filter['field']], $filter['values'], true);
+            });
+            $results = array_values($results);
+        }
+
+        // 5. Apply like filters
         foreach ($this->likeFilters as $like) {
             $results = array_filter($results, function($record) use ($like) {
                 if (!isset($record[$like['field']])) return false;
                 $value = $record[$like['field']];
-                // Skip arrays and objects - can't do string matching on them
                 if (is_array($value) || is_object($value)) return false;
                 $pattern = $like['pattern'];
                 if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
@@ -1575,7 +1815,24 @@ class noneDBQuery {
             $results = array_values($results);
         }
 
-        // 3. Apply between filters
+        // 6. Apply notLike filters
+        foreach ($this->notLikeFilters as $notLike) {
+            $results = array_filter($results, function($record) use ($notLike) {
+                if (!isset($record[$notLike['field']])) return true;
+                $value = $record[$notLike['field']];
+                if (is_array($value) || is_object($value)) return true;
+                $pattern = $notLike['pattern'];
+                if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
+                    $regex = '/' . $pattern . '/i';
+                } else {
+                    $regex = '/' . preg_quote($pattern, '/') . '/i';
+                }
+                return !preg_match($regex, (string)$value);
+            });
+            $results = array_values($results);
+        }
+
+        // 7. Apply between filters
         foreach ($this->betweenFilters as $between) {
             $results = array_filter($results, function($record) use ($between) {
                 if (!isset($record[$between['field']])) return false;
@@ -1585,7 +1842,139 @@ class noneDBQuery {
             $results = array_values($results);
         }
 
-        // 4. Sort
+        // 8. Apply notBetween filters
+        foreach ($this->notBetweenFilters as $notBetween) {
+            $results = array_filter($results, function($record) use ($notBetween) {
+                if (!isset($record[$notBetween['field']])) return true;
+                $value = $record[$notBetween['field']];
+                return $value < $notBetween['min'] || $value > $notBetween['max'];
+            });
+            $results = array_values($results);
+        }
+
+        // 9. Apply search filters
+        foreach ($this->searchFilters as $search) {
+            $term = strtolower($search['term']);
+            if ($term === '') continue; // Skip empty search terms (PHP 7.4 strpos compatibility)
+            $fields = $search['fields'];
+            $results = array_filter($results, function($record) use ($term, $fields) {
+                $searchFields = $fields;
+                if (empty($searchFields)) {
+                    $searchFields = array_keys($record);
+                }
+                foreach ($searchFields as $field) {
+                    if (!isset($record[$field])) continue;
+                    $value = $record[$field];
+                    if (is_array($value) || is_object($value)) continue;
+                    if (strpos(strtolower((string)$value), $term) !== false) {
+                        return true;
+                    }
+                }
+                return false;
+            });
+            $results = array_values($results);
+        }
+
+        // 10. Apply joins
+        foreach ($this->joinConfigs as $join) {
+            $foreignData = $this->db->find($join['foreignDb'], 0);
+            if ($foreignData === false) continue;
+
+            $foreignIndexed = [];
+            foreach ($foreignData as $fRecord) {
+                if (isset($fRecord[$join['foreignKey']])) {
+                    $key = $fRecord[$join['foreignKey']];
+                    // Skip array/object keys - they can't be used as array indices
+                    if (is_array($key) || is_object($key)) continue;
+                    $foreignIndexed[$key] = $fRecord;
+                }
+            }
+
+            foreach ($results as &$record) {
+                if (isset($record[$join['localKey']])) {
+                    $localValue = $record[$join['localKey']];
+                    // Skip array/object values - they can't be used as array indices
+                    if (is_array($localValue) || is_object($localValue)) {
+                        $record[$join['alias']] = null;
+                    } else {
+                        $record[$join['alias']] = $foreignIndexed[$localValue] ?? null;
+                    }
+                } else {
+                    $record[$join['alias']] = null;
+                }
+            }
+            unset($record);
+        }
+
+        // 11. Apply groupBy
+        if ($this->groupByField !== null) {
+            $groups = [];
+            foreach ($results as $record) {
+                $groupKey = isset($record[$this->groupByField]) ? $record[$this->groupByField] : '__null__';
+                if (!isset($groups[$groupKey])) {
+                    $groups[$groupKey] = [
+                        '_group' => $groupKey === '__null__' ? null : $groupKey,
+                        '_items' => [],
+                        '_count' => 0
+                    ];
+                }
+                $groups[$groupKey]['_items'][] = $record;
+                $groups[$groupKey]['_count']++;
+            }
+
+            // Apply having filters
+            foreach ($this->havingFilters as $having) {
+                $groups = array_filter($groups, function($group) use ($having) {
+                    $aggregate = $having['aggregate'];
+                    $operator = $having['operator'];
+                    $compareValue = $having['value'];
+
+                    // Calculate aggregate value
+                    if ($aggregate === 'count') {
+                        $aggValue = $group['_count'];
+                    } elseif (strpos($aggregate, ':') !== false) {
+                        [$aggType, $aggField] = explode(':', $aggregate, 2);
+                        $values = array_filter(
+                            array_column($group['_items'], $aggField),
+                            'is_numeric'
+                        );
+                        switch ($aggType) {
+                            case 'sum':
+                                $aggValue = array_sum($values);
+                                break;
+                            case 'avg':
+                                $aggValue = count($values) > 0 ? array_sum($values) / count($values) : 0;
+                                break;
+                            case 'min':
+                                $aggValue = count($values) > 0 ? min($values) : null;
+                                break;
+                            case 'max':
+                                $aggValue = count($values) > 0 ? max($values) : null;
+                                break;
+                            default:
+                                return true;
+                        }
+                    } else {
+                        return true;
+                    }
+
+                    // Compare
+                    switch ($operator) {
+                        case '>': return $aggValue > $compareValue;
+                        case '<': return $aggValue < $compareValue;
+                        case '>=': return $aggValue >= $compareValue;
+                        case '<=': return $aggValue <= $compareValue;
+                        case '=': return $aggValue == $compareValue;
+                        case '!=': return $aggValue != $compareValue;
+                        default: return true;
+                    }
+                });
+            }
+
+            $results = array_values($groups);
+        }
+
+        // 12. Sort
         if ($this->sortField !== null && count($results) > 0) {
             $sorted = $this->db->sort($results, $this->sortField, $this->sortOrder);
             if ($sorted !== false) {
@@ -1593,9 +1982,34 @@ class noneDBQuery {
             }
         }
 
-        // 5. Offset + Limit
+        // 13. Offset + Limit
         if ($this->offsetCount > 0 || $this->limitCount !== null) {
             $results = array_slice($results, $this->offsetCount, $this->limitCount);
+        }
+
+        // 14. Apply select/except fields
+        if (count($this->selectFields) > 0 || count($this->exceptFields) > 0) {
+            $results = array_map(function($record) {
+                if (count($this->selectFields) > 0) {
+                    // Include only selected fields (always include 'key')
+                    $filtered = [];
+                    foreach ($this->selectFields as $field) {
+                        if (array_key_exists($field, $record)) {
+                            $filtered[$field] = $record[$field];
+                        }
+                    }
+                    if (isset($record['key']) && !in_array('key', $this->selectFields)) {
+                        $filtered['key'] = $record['key'];
+                    }
+                    return $filtered;
+                } else {
+                    // Exclude specified fields
+                    foreach ($this->exceptFields as $field) {
+                        unset($record[$field]);
+                    }
+                    return $record;
+                }
+            }, $results);
         }
 
         return $results;
@@ -1766,6 +2180,137 @@ class noneDBQuery {
 
         $keys = array_map(fn($r) => $r['key'], $results);
         return $this->db->delete($this->dbname, ['key' => $keys]);
+    }
+
+    /**
+     * Remove specified fields from matching records
+     * This permanently removes fields from the database
+     * @param array $fields Fields to remove
+     * @return array ["n" => count of updated records, "fields_removed" => array of removed fields]
+     */
+    public function removeFields(array $fields): array {
+        if (empty($fields)) {
+            return ['n' => 0, 'fields_removed' => [], 'error' => 'No fields specified'];
+        }
+
+        // Filter out reserved 'key' field - cannot be removed
+        $fieldsToRemove = array_values(array_filter($fields, fn($f) => $f !== 'key'));
+        if (empty($fieldsToRemove)) {
+            return ['n' => 0, 'fields_removed' => [], 'error' => 'Cannot remove reserved field: key'];
+        }
+
+        $results = $this->get();
+        if (count($results) === 0) {
+            return ['n' => 0, 'fields_removed' => $fieldsToRemove];
+        }
+
+        $updatedCount = 0;
+        $actuallyRemoved = [];
+
+        foreach ($results as $record) {
+            $key = $record['key'];
+            $fieldsRemovedFromRecord = [];
+
+            // Check which fields exist in this record
+            foreach ($fieldsToRemove as $field) {
+                if (array_key_exists($field, $record)) {
+                    $fieldsRemovedFromRecord[] = $field;
+                    if (!in_array($field, $actuallyRemoved)) {
+                        $actuallyRemoved[] = $field;
+                    }
+                }
+            }
+
+            if (!empty($fieldsRemovedFromRecord)) {
+                // Create new record without the removed fields
+                $newRecord = [];
+                foreach ($record as $k => $v) {
+                    if ($k !== 'key' && !in_array($k, $fieldsRemovedFromRecord)) {
+                        $newRecord[$k] = $v;
+                    }
+                }
+
+                // Directly update the record at its position
+                $this->updateRecordAtPosition($key, $newRecord);
+                $updatedCount++;
+            }
+        }
+
+        return [
+            'n' => $updatedCount,
+            'fields_removed' => $actuallyRemoved
+        ];
+    }
+
+    /**
+     * Helper method to update a record at a specific key position
+     * @param int $key The record key
+     * @param array $newData The new record data
+     */
+    private function updateRecordAtPosition(int $key, array $newData): void {
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $this->dbname);
+        $hash = $this->callPrivateMethod('hashDBName', $dbname);
+        $dbDir = $this->getDbDir();
+        $fullPath = $dbDir . $hash . "-" . $dbname . ".nonedb";
+
+        // Check if sharded
+        $metaPath = $fullPath . ".meta";
+        if (file_exists($metaPath)) {
+            // Sharded database - find correct shard
+            $metaContent = file_get_contents($metaPath);
+            $meta = json_decode($metaContent, true);
+            if ($meta) {
+                $shardSize = $meta['shardSize'];
+                $shardId = (int)floor($key / $shardSize);
+                $localKey = $key % $shardSize;
+                $shardPath = $dbDir . $hash . "-" . $dbname . "_s" . $shardId . ".nonedb";
+
+                if (file_exists($shardPath)) {
+                    $shardContent = file_get_contents($shardPath);
+                    $shardData = json_decode($shardContent, true);
+                    if ($shardData && isset($shardData['data'])) {
+                        $shardData['data'][$localKey] = $newData;
+                        file_put_contents($shardPath, json_encode($shardData), LOCK_EX);
+                        clearstatcache(true, $shardPath);
+                    }
+                }
+            }
+        } else {
+            // Non-sharded database
+            if (file_exists($fullPath)) {
+                $content = file_get_contents($fullPath);
+                $data = json_decode($content, true);
+                if ($data && isset($data['data'])) {
+                    $data['data'][$key] = $newData;
+                    file_put_contents($fullPath, json_encode($data), LOCK_EX);
+                    clearstatcache(true, $fullPath);
+                }
+            }
+        }
+    }
+
+    /**
+     * Get the database directory from parent noneDB instance
+     * @return string
+     */
+    private function getDbDir(): string {
+        $reflector = new \ReflectionClass($this->db);
+        $property = $reflector->getProperty('dbDir');
+        $property->setAccessible(true);
+        return $property->getValue($this->db);
+    }
+
+    /**
+     * Call a private method on the parent noneDB instance
+     * @param string $methodName
+     * @param mixed ...$args
+     * @return mixed
+     */
+    private function callPrivateMethod(string $methodName, ...$args) {
+        $reflector = new \ReflectionClass($this->db);
+        $method = $reflector->getMethod($methodName);
+        $method->setAccessible(true);
+        return $method->invoke($this->db, ...$args);
     }
 }
 ?>
