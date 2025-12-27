@@ -1,9 +1,9 @@
 # noneDB
 
-[![Version](https://img.shields.io/badge/version-2.0.0-orange.svg)](CHANGES.md)
+[![Version](https://img.shields.io/badge/version-2.1.0-orange.svg)](CHANGES.md)
 [![PHP Version](https://img.shields.io/badge/PHP-7.4%2B-blue.svg)](https://php.net)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-448%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-723%20passed-brightgreen.svg)](tests/)
 
 **noneDB** is a lightweight, file-based NoSQL database for PHP. No installation required - just include and go!
 
@@ -36,6 +36,32 @@ $db = new noneDB();
 ```bash
 composer require orhanayd/nonedb
 ```
+
+---
+
+## Upgrading
+
+> **CRITICAL: Before updating noneDB, you MUST backup your `$secretKey`!**
+
+The `$secretKey` is used to hash database filenames. If you lose it or it changes, you will **lose access to all your existing data**.
+
+### Upgrade Steps
+
+1. **Before update:** Copy your current `$secretKey` from `noneDB.php`
+   ```php
+   private $secretKey = "your_current_key";  // SAVE THIS!
+   ```
+
+2. **Update:** Replace `noneDB.php` with the new version
+
+3. **After update:** Restore your `$secretKey` in the new `noneDB.php`
+   ```php
+   private $secretKey = "your_current_key";  // PASTE IT BACK!
+   ```
+
+4. **Verify:** Test that your databases are accessible
+
+> **Warning:** If you use the default key `"nonedb_123"` in production, change it immediately. But once changed, never change it again or you'll lose access to your data.
 
 ---
 
@@ -403,14 +429,55 @@ $results = $db->query("users")
 
 ### Chainable Methods
 
+#### Basic Filters
+
 | Method | Description | Example |
 |--------|-------------|---------|
-| `where($filters)` | Filter by field values | `->where(["active" => true])` |
-| `like($field, $pattern)` | Pattern matching (^start, end$) | `->like("email", "gmail")` |
-| `between($field, $min, $max)` | Range filter | `->between("age", 18, 65)` |
+| `where($filters)` | Filter by field values (AND) | `->where(["active" => true])` |
+| `orWhere($filters)` | OR condition filter | `->orWhere(["role" => "admin"])` |
+| `whereIn($field, $values)` | Field value in array | `->whereIn("status", ["active", "pending"])` |
+| `whereNotIn($field, $values)` | Field value NOT in array | `->whereNotIn("role", ["banned", "suspended"])` |
+| `whereNot($filters)` | NOT equal filter | `->whereNot(["deleted" => true])` |
+
+#### Pattern & Range Filters
+
+| Method | Description | Example |
+|--------|-------------|---------|
+| `like($field, $pattern)` | Pattern match (^start, end$) | `->like("email", "gmail")` |
+| `notLike($field, $pattern)` | Pattern NOT match | `->notLike("email", "test")` |
+| `between($field, $min, $max)` | Range filter (inclusive) | `->between("age", 18, 65)` |
+| `notBetween($field, $min, $max)` | Outside range | `->notBetween("price", 100, 500)` |
+
+#### Advanced Filters
+
+| Method | Description | Example |
+|--------|-------------|---------|
+| `search($term, $fields)` | Full-text search | `->search("john", ["name", "email"])` |
+| `join($db, $localKey, $foreignKey)` | Join with another database | `->join("orders", "id", "user_id")` |
+
+#### Grouping & Aggregation
+
+| Method | Description | Example |
+|--------|-------------|---------|
+| `groupBy($field)` | Group results by field | `->groupBy("category")` |
+| `having($aggregate, $op, $value)` | Filter groups | `->having("count", ">", 5)` |
+
+#### Field Selection
+
+| Method | Description | Example |
+|--------|-------------|---------|
+| `select($fields)` | Include only specific fields | `->select(["name", "email"])` |
+| `except($fields)` | Exclude specific fields | `->except(["password", "token"])` |
+
+#### Sorting & Pagination
+
+| Method | Description | Example |
+|--------|-------------|---------|
 | `sort($field, $order)` | Sort results | `->sort("created_at", "desc")` |
+| `orderBy($field, $order)` | Alias for sort | `->orderBy("name", "asc")` |
 | `limit($count)` | Limit results | `->limit(10)` |
-| `offset($count)` | Skip results (pagination) | `->offset(20)` |
+| `offset($count)` | Skip results | `->offset(20)` |
+| `skip($count)` | Alias for offset | `->skip(20)` |
 
 ### Terminal Methods
 
@@ -426,19 +493,59 @@ $results = $db->query("users")
 | `min($field)` | `mixed` | Minimum value |
 | `max($field)` | `mixed` | Maximum value |
 | `distinct($field)` | `array` | Unique values |
-| `update($set)` | `array` | Update matches |
-| `delete()` | `array` | Delete matches |
+| `update($set)` | `array` | Update matching records |
+| `delete()` | `array` | Delete matching records |
+| `removeFields($fields)` | `array` | Remove fields permanently |
 
 ### Examples
 
 ```php
-// Complex query
+// Complex query with multiple filters
 $topUsers = $db->query("users")
     ->where(["active" => true])
+    ->whereIn("role", ["admin", "moderator"])
     ->between("age", 18, 35)
     ->like("email", "gmail.com$")
     ->sort("score", "desc")
     ->limit(10)
+    ->get();
+
+// OR conditions
+$users = $db->query("users")
+    ->where(["department" => "IT"])
+    ->orWhere(["department" => "Engineering"])
+    ->orWhere(["role" => "admin"])
+    ->get();
+
+// Full-text search
+$results = $db->query("products")
+    ->search("wireless keyboard")
+    ->sort("price", "asc")
+    ->get();
+
+// Join databases
+$orders = $db->query("orders")
+    ->where(["status" => "completed"])
+    ->join("users", "user_id", "id")
+    ->get();
+// Each order now has a "users" field with the joined user data
+
+// Group by with having
+$categories = $db->query("products")
+    ->groupBy("category")
+    ->having("count", ">", 10)
+    ->having("avg:price", ">", 100)
+    ->get();
+
+// Select specific fields only
+$users = $db->query("users")
+    ->select(["name", "email", "avatar"])
+    ->limit(50)
+    ->get();
+
+// Exclude sensitive fields
+$users = $db->query("users")
+    ->except(["password", "token", "secret_key"])
     ->get();
 
 // Aggregation
@@ -454,12 +561,19 @@ if ($db->query("users")->where(["email" => $email])->exists()) {
 // Update with chain
 $db->query("users")
     ->where(["status" => "pending"])
-    ->update(["status" => "active"]);
+    ->whereIn("created_at", $oldDates)
+    ->update(["status" => "expired"]);
 
 // Delete with chain
 $db->query("logs")
     ->where(["level" => "debug"])
+    ->notBetween("created_at", $startDate, $endDate)
     ->delete();
+
+// Remove fields permanently
+$db->query("users")
+    ->where(["status" => "deleted"])
+    ->removeFields(["personal_data", "payment_info"]);
 
 // Pagination
 $page = 2;
@@ -467,7 +581,7 @@ $perPage = 20;
 $users = $db->query("users")
     ->sort("created_at", "desc")
     ->limit($perPage)
-    ->offset(($page - 1) * $perPage)
+    ->skip(($page - 1) * $perPage)
     ->get();
 ```
 
@@ -628,7 +742,7 @@ $result = $db->update("users", "invalid");
 
 Tested on PHP 8.2, macOS (Apple Silicon)
 
-**Test data structure (6 fields per record):**
+**Test data structure (7 fields per record):**
 ```php
 [
     "name" => "User123",
@@ -636,45 +750,59 @@ Tested on PHP 8.2, macOS (Apple Silicon)
     "age" => 25,
     "salary" => 8500,
     "city" => "Istanbul",
+    "department" => "IT",
     "active" => true
 ]
 ```
 
 ### Write Operations
-| Operation | 100 | 1K | 10K | 50K | 100K | 500K |
-|-----------|-----|-----|------|------|-------|-------|
-| insert() | 10 ms | 10 ms | 19 ms | 70 ms | 139 ms | 706 ms |
-| update() | 12 ms | 15 ms | 48 ms | 203 ms | 392 ms | 1.9 s |
-| delete() | 12 ms | 16 ms | 48 ms | 199 ms | 401 ms | 1.9 s |
+| Operation | 100 | 1K | 10K | 50K | 100K |
+|-----------|-----|-----|------|------|-------|
+| insert() | 14 ms | 13 ms | 56 ms | 248 ms | 652 ms |
+| update() | 18 ms | 22 ms | 66 ms | 306 ms | 658 ms |
+| delete() | 18 ms | 21 ms | 148 ms | 163 ms | 175 ms |
 
 ### Read Operations
-| Operation | 100 | 1K | 10K | 50K | 100K | 500K |
-|-----------|-----|-----|------|------|-------|-------|
-| find(all) | 6 ms | 7 ms | 27 ms | 115 ms | 226 ms | 1.2 s |
-| find(key) | 6 ms | 7 ms | 21 ms | 80 ms | 159 ms | 772 ms |
-| find(filter) | 6 ms | 8 ms | 24 ms | 104 ms | 192 ms | 971 ms |
+| Operation | 100 | 1K | 10K | 50K | 100K |
+|-----------|-----|-----|------|------|-------|
+| find(all) | 9 ms | 10 ms | 29 ms | 129 ms | 319 ms |
+| find(key) | 9 ms | 10 ms | 27 ms | 30 ms | 29 ms |
+| find(filter) | 9 ms | 11 ms | 34 ms | 148 ms | 361 ms |
+
+> **Note:** `find(key)` stays constant at ~30ms for 50K-100K thanks to sharding - only relevant shard is read.
 
 ### Query & Aggregation
-| Operation | 100 | 1K | 10K | 50K | 100K | 500K |
-|-----------|-----|-----|------|------|-------|-------|
-| count() | 6 ms | 8 ms | 24 ms | 100 ms | 228 ms | 1.2 s |
-| distinct() | 6 ms | 8 ms | 26 ms | 111 ms | 228 ms | 1.4 s |
-| sum() | 6 ms | 8 ms | 26 ms | 112 ms | 222 ms | 1.5 s |
-| like() | 6 ms | 8 ms | 27 ms | 113 ms | 229 ms | 1.4 s |
-| between() | 6 ms | 8 ms | 26 ms | 115 ms | 216 ms | 1.4 s |
-| sort() | <1 ms | 4 ms | 51 ms | 331 ms | 719 ms | 4.6 s |
-| first() | 6 ms | 8 ms | 25 ms | 123 ms | 237 ms | 1.2 s |
-| exists() | 6 ms | 8 ms | 26 ms | 103 ms | 204 ms | 991 ms |
+| Operation | 100 | 1K | 10K | 50K | 100K |
+|-----------|-----|-----|------|------|-------|
+| count() | 9 ms | 10 ms | 30 ms | 137 ms | 324 ms |
+| distinct() | 9 ms | 11 ms | 32 ms | 157 ms | 364 ms |
+| sum() | 9 ms | 11 ms | 32 ms | 157 ms | 352 ms |
+| like() | 9 ms | 11 ms | 33 ms | 157 ms | 340 ms |
+| between() | 9 ms | 11 ms | 31 ms | 148 ms | 294 ms |
+| sort() | <1 ms | 4 ms | 53 ms | 369 ms | 814 ms |
+| first() | 9 ms | 10 ms | 32 ms | 151 ms | 335 ms |
+| exists() | 8 ms | 11 ms | 33 ms | 184 ms | 358 ms |
+
+### Method Chaining (v2.1)
+| Operation | 100 | 1K | 10K | 50K | 100K |
+|-----------|-----|-----|------|------|-------|
+| whereIn() | 9 ms | 11 ms | 36 ms | 192 ms | 398 ms |
+| orWhere() | 8 ms | 11 ms | 41 ms | 193 ms | 479 ms |
+| search() | 9 ms | 13 ms | 69 ms | 310 ms | 737 ms |
+| groupBy() | 9 ms | 11 ms | 65 ms | 228 ms | 360 ms |
+| select() | 9 ms | 11 ms | 47 ms | 249 ms | 589 ms |
+| complex chain | 9 ms | 11 ms | 43 ms | 247 ms | 498 ms |
+
+> **Complex chain:** `where() + whereIn() + between() + notLike() + sort() + limit() + select()`
 
 ### Storage
 | Records | File Size | Peak Memory |
 |---------|-----------|-------------|
-| 100 | 10 KB | 0.7 MB |
-| 1,000 | 98 KB | 2.7 MB |
-| 10,000 | 1 MB | 23 MB |
-| 50,000 | 5 MB | 110 MB |
-| 100,000 | 10 MB | 220 MB |
-| 500,000 | 50 MB | 1.1 GB |
+| 100 | 10 KB | 2 MB |
+| 1,000 | 98 KB | 4 MB |
+| 10,000 | 1 MB | 28 MB |
+| 50,000 | 5 MB | 128 MB |
+| 100,000 | 10 MB | 252 MB |
 
 ---
 
@@ -812,6 +940,15 @@ vendor/bin/phpunit --testdox
 - [x] `exists()` - Check if records exist
 - [x] `between()` - Range queries
 - [x] **Auto-sharding** - Horizontal partitioning for large datasets
+- [x] `orWhere()` - OR condition queries
+- [x] `whereIn()` / `whereNotIn()` - Array membership filters
+- [x] `whereNot()` - Negation filters
+- [x] `notLike()` / `notBetween()` - Negated pattern and range filters
+- [x] `search()` - Full-text search
+- [x] `join()` - Database joins
+- [x] `groupBy()` / `having()` - Grouping and aggregate filtering
+- [x] `select()` / `except()` - Field projection
+- [x] `removeFields()` - Permanent field removal
 
 ---
 

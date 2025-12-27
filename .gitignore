@@ -6,6 +6,7 @@ composer.lock
 # Database files
 /db/*.nonedb
 /db/*.nonedbinfo
+/db/*.nonedb.*
 
 # Test artifacts
 /tests/test_db/
