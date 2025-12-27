@@ -1,8 +1,8 @@
 # noneDB Changelog
 
-## v2.3.0 (2025-12-27)
+## v2.3.0 (2025-12-28)
 
-### Major: Write Buffer System - 12x Faster Inserts
+### Major: Write Buffer System + Performance Caching + Index System
 
 This release implements a **write buffer system** for dramatically faster insert operations on large non-sharded databases.
 
@@ -38,7 +38,7 @@ Every insert previously required reading and writing the ENTIRE database file:
 1. **Inserts go to buffer file** (JSONL format - one JSON per line)
 2. **No full-file read** required for each insert
 3. **Auto-flush when:**
-   - Buffer reaches 2MB size limit
+   - Buffer reaches 1MB size limit
    - 30 seconds pass since last flush
    - Graceful shutdown occurs
 4. **Read operations flush first** (flush-before-read strategy)
@@ -60,10 +60,11 @@ hash-dbname_s1.nonedb.buffer  # Shard 1 buffer
 
 ```php
 private $bufferEnabled = true;           // Enable/disable buffering
-private $bufferSizeLimit = 2097152;      // 2MB buffer size
+private $bufferSizeLimit = 1048576;      // 1MB buffer size
 private $bufferCountLimit = 10000;       // Max records per buffer
 private $bufferFlushInterval = 30;       // Auto-flush every 30 seconds
 private $bufferAutoFlushOnShutdown = true;
+private $shardSize = 100000;             // 100K records per shard
 ```
 
 #### New Public API
@@ -75,7 +76,7 @@ $db->flushAllBuffers();           // Flush all databases
 
 // Buffer info
 $info = $db->getBufferInfo("users");
-// ['enabled' => true, 'sizeLimit' => 2097152, 'buffers' => [...]]
+// ['enabled' => true, 'sizeLimit' => 1048576, 'buffers' => [...]]
 
 // Configuration
 $db->enableBuffering(true);       // Enable/disable
@@ -85,9 +86,63 @@ $db->setBufferCountLimit(5000);   // Set to 5000 records
 $db->isBufferingEnabled();        // Check if enabled
 ```
 
+---
+
+### Performance Caching System
+
+#### Hash Caching
+PBKDF2 hash computation is now cached per instance:
+```php
+// Before: 1000 iterations per call (~0.5-1ms each)
+// After: Computed once, cached for subsequent calls
+```
+
+#### Meta Caching with TTL
+Metadata is cached with a 1-second TTL to reduce file reads:
+```php
+$meta = $this->getCachedMeta($dbname);  // Uses cache if valid
+```
+
+---
+
+### Primary Key Index System
+
+New index file provides O(1) key existence checks:
+```
+hash-dbname.nonedb.idx
+```
+
+```json
+{
+    "version": 1,
+    "totalRecords": 100000,
+    "sharded": true,
+    "entries": {
+        "0": [0, 0],
+        "10000": [1, 0]
+    }
+}
+```
+
+#### Index Public API
+
+```php
+$db->enableIndexing(true);        // Enable/disable indexing
+$db->isIndexingEnabled();         // Check if enabled
+$db->rebuildIndex("users");       // Rebuild index for database
+$db->getIndexInfo("users");       // Get index statistics
+```
+
+#### How Index Works
+
+1. **Auto-build**: Index is built on first key-based lookup
+2. **Auto-update**: Index updated on insert/delete operations
+3. **Auto-rebuild**: Index rebuilt after compact() operation
+4. **Graceful fallback**: If index is corrupted, falls back to full scan
+
 #### Breaking Changes
 
-None. Buffer is transparent - existing code works without modification.
+None. All existing APIs work without modification.
 
 ---
 

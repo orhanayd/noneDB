@@ -14,7 +14,8 @@
 - **No database server required** - just include and use
 - **JSON-based storage** with PBKDF2-hashed filenames
 - **Atomic file locking** - thread-safe concurrent operations
-- **Write buffer system** - 12x faster inserts on large databases
+- **Write buffer system** - fast append-only inserts
+- **Primary key index** - O(1) key existence checks
 - **Auto-sharding** for large datasets (500K+ records tested)
 - **Method chaining** (fluent interface) for clean queries
 - Full CRUD operations with advanced filtering
@@ -80,12 +81,12 @@ private $autoCreateDB = true;          // Auto-create databases on first use
 
 // Sharding configuration
 private $shardingEnabled = true;       // Enable auto-sharding for large datasets
-private $shardSize = 10000;            // Records per shard (default: 10,000)
+private $shardSize = 100000;           // Records per shard (default: 100K)
 private $autoMigrate = true;           // Auto-migrate when threshold reached
 
 // Write buffer configuration (v2.3.0+)
 private $bufferEnabled = true;         // Enable write buffer for fast inserts
-private $bufferSizeLimit = 2097152;    // Buffer size limit (2MB default)
+private $bufferSizeLimit = 1048576;    // Buffer size limit (1MB default)
 private $bufferCountLimit = 10000;     // Max records per buffer
 private $bufferFlushInterval = 30;     // Auto-flush interval in seconds
 ```
@@ -597,7 +598,7 @@ $users = $db->query("users")
 
 ## Auto-Sharding
 
-noneDB automatically partitions large databases into smaller shards for better performance. When a database reaches the threshold (default: 10,000 records), it's automatically split into multiple shard files.
+noneDB automatically partitions large databases into smaller shards for better performance. When a database reaches the threshold (default: 100,000 records), it's automatically split into multiple shard files.
 
 ### How It Works
 
@@ -605,12 +606,12 @@ noneDB automatically partitions large databases into smaller shards for better p
 Without Sharding (500K records):
 ├── hash-users.nonedb          # 50 MB, entire file read for every operation
 
-With Sharding (500K records, 50 shards):
+With Sharding (500K records, 5 shards):
 ├── hash-users.nonedb.meta     # Shard metadata
-├── hash-users_s0.nonedb       # Shard 0: records 0-9,999
-├── hash-users_s1.nonedb       # Shard 1: records 10,000-19,999
+├── hash-users_s0.nonedb       # Shard 0: records 0-99,999
+├── hash-users_s1.nonedb       # Shard 1: records 100,000-199,999
 ├── ...
-└── hash-users_s49.nonedb      # Shard 49: records 490,000-499,999
+└── hash-users_s4.nonedb       # Shard 4: records 400,000-499,999
 ```
 
 ### Performance Comparison (500K Records)
@@ -635,15 +636,15 @@ $info = $db->getShardInfo("users");
 // Returns:
 // [
 //     "sharded" => true,
-//     "shards" => 50,
+//     "shards" => 5,
 //     "totalRecords" => 500000,
 //     "deletedCount" => 150,
-//     "shardSize" => 10000,
+//     "shardSize" => 100000,
 //     "nextKey" => 500150
 // ]
 
 // For non-sharded database:
-// ["sharded" => false, "shards" => 0, "totalRecords" => 5000, "shardSize" => 10000]
+// ["sharded" => false, "shards" => 0, "totalRecords" => 50000, "shardSize" => 100000]
 ```
 
 #### compact($dbname)
@@ -695,7 +696,7 @@ Check current sharding configuration.
 
 ```php
 $db->isShardingEnabled();  // Returns: true
-$db->getShardSize();       // Returns: 10000
+$db->getShardSize();       // Returns: 100000
 ```
 
 ### Configuration Options
@@ -705,7 +706,7 @@ $db->getShardSize();       // Returns: 10000
 private $shardingEnabled = false;
 
 // Change shard size (records per shard)
-private $shardSize = 5000;  // Smaller shards = faster single-record ops, more files
+private $shardSize = 100000;  // Default: 100K records per shard
 
 // Disable auto-migration (manual control)
 private $autoMigrate = false;
@@ -715,8 +716,7 @@ private $autoMigrate = false;
 
 | Dataset Size | Recommendation |
 |--------------|----------------|
-| < 10K records | Sharding unnecessary |
-| 10K - 100K | Sharding beneficial for key-based lookups |
+| < 100K records | Sharding unnecessary |
 | 100K - 500K | **Sharding recommended** |
 | > 500K | Consider a dedicated database server |
 
@@ -776,7 +776,7 @@ Every insert required reading and writing the ENTIRE database file:
 1. **Inserts go to buffer file** (JSONL format - one JSON per line)
 2. **No full-file read** required for each insert
 3. **Auto-flush when:**
-   - Buffer reaches 2MB size limit
+   - Buffer reaches 1MB size limit
    - 30 seconds pass since last flush
    - Graceful shutdown occurs (shutdown handler)
 4. **Read operations flush first** (flush-before-read for consistency)
@@ -822,7 +822,7 @@ $info = $db->getBufferInfo("users");
 // Returns:
 // [
 //     "enabled" => true,
-//     "sizeLimit" => 2097152,
+//     "sizeLimit" => 1048576,
 //     "countLimit" => 10000,
 //     "flushInterval" => 30,
 //     "buffers" => [
@@ -888,7 +888,7 @@ $users = $db->find("users", []);  // Buffer auto-flushed before read
 
 | Trigger | Description |
 |---------|-------------|
-| Size limit | Buffer reaches 2MB (configurable) |
+| Size limit | Buffer reaches 1MB (configurable) |
 | Record count | Buffer has 10,000 records (configurable) |
 | Time interval | 30 seconds since last flush (configurable) |
 | Read operation | Any `find()`, `count()`, etc. flushes first |
@@ -931,43 +931,41 @@ Tested on PHP 8.2, macOS (Apple Silicon M-series)
 ]
 ```
 
-### Write Operations (Bulk Insert)
+### Write Operations
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| insert() | 23 ms | 36 ms | 81 ms | 452 ms | 800 ms | 5.5 s |
-| update() | 12 ms | 19 ms | 108 ms | 639 ms | 1.2 s | 7.7 s |
-| delete() | 12 ms | 18 ms | 102 ms | 568 ms | 1.3 s | 6.6 s |
+| insert() | 7 ms | 28 ms | 99 ms | 408 ms | 743 ms | 4.1 s |
+| update() | 1 ms | 13 ms | 147 ms | 832 ms | 1.8 s | 9.5 s |
+| delete() | 1 ms | 13 ms | 132 ms | 728 ms | 2 s | 9.4 s |
 
 ### Read Operations
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| find(all) | 18 ms | 33 ms | 113 ms | 590 ms | 1.3 s | 6.3 s |
-| find(key) | 12 ms | 17 ms | 33 ms | 79 ms | 136 ms | 580 ms |
-| find(filter) | 12 ms | 18 ms | 108 ms | 528 ms | 1.1 s | 5.3 s |
-
-> **Note:** `find(key)` benefits from sharding - only the relevant shard is read.
+| find(all) | 3 ms | 25 ms | 134 ms | 743 ms | 2 s | 8.2 s |
+| find(key) | 3 ms | 29 ms | 138 ms | 612 ms | 1.6 s | 6.5 s |
+| find(filter) | 1 ms | 11 ms | 126 ms | 629 ms | 1.6 s | 6.6 s |
 
 ### Query & Aggregation
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| count() | 12 ms | 18 ms | 101 ms | 531 ms | 1.2 s | 5.8 s |
-| distinct() | 12 ms | 18 ms | 111 ms | 667 ms | 1.5 s | 7 s |
-| sum() | 12 ms | 18 ms | 110 ms | 665 ms | 1.5 s | 6.9 s |
-| like() | 12 ms | 20 ms | 131 ms | 774 ms | 1.7 s | 8.1 s |
-| between() | 12 ms | 19 ms | 116 ms | 651 ms | 1.6 s | 7.6 s |
-| sort() | 13 ms | 35 ms | 334 ms | 1.9 s | 4.9 s | 25.6 s |
-| first() | 12 ms | 18 ms | 117 ms | 591 ms | 1.5 s | 6.9 s |
-| exists() | 11 ms | 18 ms | 138 ms | 619 ms | 1.4 s | 7.1 s |
+| count() | 1 ms | 11 ms | 130 ms | 668 ms | 1.7 s | 7.9 s |
+| distinct() | 1 ms | 12 ms | 130 ms | 839 ms | 2.2 s | 9.8 s |
+| sum() | 1 ms | 13 ms | 130 ms | 866 ms | 2.1 s | 9.8 s |
+| like() | 2 ms | 16 ms | 161 ms | 1 s | 2.4 s | 11.5 s |
+| between() | 1 ms | 14 ms | 143 ms | 906 ms | 2.1 s | 11 s |
+| sort() | 5 ms | 36 ms | 451 ms | 3 s | 7.1 s | 40.1 s |
+| first() | 1 ms | 11 ms | 168 ms | 760 ms | 1.6 s | 8.4 s |
+| exists() | 1 ms | 12 ms | 140 ms | 770 ms | 1.7 s | 8.7 s |
 
 ### Method Chaining (v2.1+)
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| whereIn() | 12 ms | 19 ms | 223 ms | 678 ms | 1.6 s | 10.2 s |
-| orWhere() | 12 ms | 21 ms | 188 ms | 753 ms | 1.8 s | 12.2 s |
-| search() | 12 ms | 21 ms | 225 ms | 775 ms | 1.8 s | 11.7 s |
-| groupBy() | 12 ms | 19 ms | 161 ms | 731 ms | 1.7 s | 11.8 s |
-| select() | 12 ms | 21 ms | 215 ms | 1.2 s | 2.6 s | 12.9 s |
-| complex chain | 12 ms | 21 ms | 198 ms | 808 ms | 1.8 s | 10.3 s |
+| whereIn() | 1 ms | 13 ms | 154 ms | 866 ms | 2.6 s | 14.8 s |
+| orWhere() | 2 ms | 15 ms | 184 ms | 975 ms | 2.9 s | 15.1 s |
+| search() | 2 ms | 15 ms | 190 ms | 1 s | 3.4 s | 15.7 s |
+| groupBy() | 1 ms | 13 ms | 165 ms | 939 ms | 2.5 s | 16.8 s |
+| select() | 2 ms | 17 ms | 276 ms | 1.6 s | 3.4 s | 20.7 s |
+| complex chain | 1 ms | 15 ms | 188 ms | 1 s | 2.5 s | 14 s |
 
 > **Complex chain:** `where() + whereIn() + between() + select() + sort() + limit()`
 
@@ -976,10 +974,132 @@ Tested on PHP 8.2, macOS (Apple Silicon M-series)
 |---------|-----------|-------------|
 | 100 | 10 KB | 2 MB |
 | 1,000 | 98 KB | 4 MB |
-| 10,000 | 1 MB | 28 MB |
-| 50,000 | 5 MB | 128 MB |
-| 100,000 | 10 MB | 252 MB |
-| 500,000 | 50 MB | ~1.2 GB |
+| 10,000 | 1 MB | 8 MB |
+| 50,000 | 5 MB | 34 MB |
+| 100,000 | 10 MB | 134 MB |
+| 500,000 | 50 MB | ~600 MB |
+
+---
+
+## SleekDB vs noneDB Comparison
+
+### Why Choose noneDB?
+
+noneDB excels in **bulk operations** and **large dataset handling**:
+
+| Strength | Performance |
+|----------|-------------|
+| 🚀 **Bulk Insert** | **20-25x faster** than SleekDB |
+| 🔍 **Find All / Filters** | **56-68x faster** at scale |
+| ✏️ **Update Operations** | **56x faster** on large datasets |
+| 🗑️ **Delete Operations** | **48x faster** on large datasets |
+| 📦 **Large Datasets** | Handles 500K+ records with auto-sharding |
+| 🔒 **Thread Safety** | Atomic file locking for concurrent access |
+| ⚡ **Write Buffer** | Append-only inserts, no full-file rewrites |
+
+**Best for:** E-commerce catalogs, log aggregation, analytics, batch processing, data migrations, reporting systems
+
+### When to Consider SleekDB?
+
+SleekDB has advantages in **specific scenarios**:
+
+| Scenario | SleekDB Advantage |
+|----------|-------------------|
+| 🎯 **Frequent ID lookups** | <1ms vs 400ms (when you need thousands of single-record lookups per second) |
+| 💾 **Very low memory** | 8x less RAM (embedded systems, shared hosting with strict limits) |
+
+**Consider SleekDB only if:** Your primary workload is high-frequency single-record ID lookups (e.g., 1000+ lookups/sec) AND memory is severely constrained.
+
+> **Note:** For most applications, noneDB's 400ms ID lookup is acceptable, and you gain 20-60x performance on all other operations.
+
+---
+
+*Detailed benchmark comparisons below.*
+
+---
+
+### Detailed Comparison
+
+Performance comparison with [SleekDB](https://github.com/SleekDB/SleekDB) v2.15 (PHP flat-file database).
+
+### Architectural Differences
+
+| Feature | SleekDB | noneDB |
+|---------|---------|--------|
+| **Storage** | One JSON file per record | Single file (sharded) |
+| **ID Access** | Direct file read | Shard lookup |
+| **Bulk Read** | Traverse all files | Single decode |
+| **Sharding** | None | Automatic (100K+) |
+| **Cache** | Built-in | Hash/Meta cache |
+| **Buffer** | None | Write buffer |
+| **Indexing** | None | Primary key index |
+
+### Benchmark Results (100K Records)
+
+#### Bulk Insert
+| Records | SleekDB | noneDB | Winner |
+|---------|---------|--------|--------|
+| 100 | 20 ms | 5 ms | **noneDB 4x** |
+| 1K | 162 ms | 12 ms | **noneDB 14x** |
+| 10K | 1.88 s | 86 ms | **noneDB 22x** |
+| 50K | 12.84 s | 517 ms | **noneDB 25x** |
+| 100K | 25.67 s | 1.26 s | **noneDB 20x** |
+
+#### Find All Records
+| Records | SleekDB | noneDB | Winner |
+|---------|---------|--------|--------|
+| 100 | 5 ms | <1 ms | **noneDB 5x** |
+| 1K | 32 ms | 2 ms | **noneDB 16x** |
+| 10K | 347 ms | 22 ms | **noneDB 16x** |
+| 50K | 7.41 s | 109 ms | **noneDB 68x** |
+| 100K | 14.15 s | 251 ms | **noneDB 56x** |
+
+#### Find by ID/Key
+| Records | SleekDB | noneDB | Winner |
+|---------|---------|--------|--------|
+| 100 | <1 ms | <1 ms | Tie |
+| 1K | <1 ms | 6 ms | **SleekDB** |
+| 10K | <1 ms | 58 ms | **SleekDB** |
+| 50K | <1 ms | 289 ms | **SleekDB** |
+| 100K | <1 ms | 405 ms | **SleekDB** |
+
+#### Sequential Insert (100 records on existing DB)
+| Records | SleekDB | noneDB (buffer) | Winner |
+|---------|---------|-----------------|--------|
+| 100 | 25 ms | 13 ms | **noneDB 2x** |
+| 1K | 22 ms | 15 ms | **noneDB 1.5x** |
+| 10K | 24 ms | 39 ms | SleekDB 1.6x |
+| 50K | 36 ms | 141 ms | SleekDB 4x |
+| 100K | 36 ms | 22 ms | **noneDB 1.6x** |
+
+#### Update & Delete (100K Records)
+| Operation | SleekDB | noneDB | Winner |
+|-----------|---------|--------|--------|
+| Update | 17.44 s | 309 ms | **noneDB 56x** |
+| Delete | 15.57 s | 325 ms | **noneDB 48x** |
+| Count | 37 ms | 222 ms | SleekDB 6x |
+
+#### Memory Usage (Bulk Insert)
+| Records | SleekDB | noneDB | Winner |
+|---------|---------|--------|--------|
+| 10K | 4 MB | 8 MB | SleekDB 2x |
+| 50K | 18 MB | 34 MB | SleekDB 2x |
+| 100K | 16 MB | 134 MB | **SleekDB 8x** |
+
+### Summary
+
+| Use Case | Winner | Advantage |
+|----------|--------|-----------|
+| **Bulk Insert** | **noneDB** | 20-25x faster |
+| **Find All** | **noneDB** | 56x faster |
+| **Update/Delete** | **noneDB** | 48-56x faster |
+| **Filter Queries** | **noneDB** | 61x faster |
+| **ID-based lookup** | **SleekDB** | 400x faster |
+| **Memory usage** | **SleekDB** | 8x less |
+
+> **Choose noneDB** for: Bulk operations, large datasets, filter queries, update/delete heavy workloads
+>
+> **Choose SleekDB** for: Frequent single-record access by ID, memory-constrained environments
 
 ---
 
@@ -1027,11 +1147,11 @@ noneDB v2.2 implements **professional-grade atomic file locking** using `flock()
 - Database names are sanitized to `[A-Za-z0-9' -]` only
 
 ### Performance Considerations
-- Optimized for datasets up to 10,000 records per shard
-- **With sharding:** Tested up to 500,000 records with excellent key-based lookup performance (~23ms)
+- Optimized for datasets up to 100,000 records per shard
+- **With sharding:** Tested up to 500,000 records with excellent performance
 - Filter-based queries scan all shards (linear complexity)
-- No indexing support - use key-based lookups for best performance
-- For full-table scans on 500K+ records, expect 3-5 second response times
+- Primary key index system for faster key lookups
+- For full-table scans on 500K+ records, expect 6-8 second response times
 
 ### Data Integrity
 - No transactions support (each operation is atomic individually)
@@ -1063,7 +1183,7 @@ $db->insert("test'db", ["data" => "test"]);  // OK - apostrophe allowed
 
 ## File Structure
 
-### Standard Database (< 10K records)
+### Standard Database (< 100K records)
 ```
 project/
 ├── noneDB.php
@@ -1075,7 +1195,7 @@ project/
     └── d4e5f6...-posts.nonedbinfo
 ```
 
-### Sharded Database (10K+ records)
+### Sharded Database (100K+ records)
 ```
 project/
 ├── noneDB.php
@@ -1104,14 +1224,14 @@ Shard metadata format (`.meta` file):
 ```json
 {
     "version": 1,
-    "shardSize": 10000,
-    "totalRecords": 25000,
+    "shardSize": 100000,
+    "totalRecords": 250000,
     "deletedCount": 150,
-    "nextKey": 25150,
+    "nextKey": 250150,
     "shards": [
-        {"id": 0, "file": "_s0", "count": 9850, "deleted": 150},
-        {"id": 1, "file": "_s1", "count": 10000, "deleted": 0},
-        {"id": 2, "file": "_s2", "count": 5000, "deleted": 0}
+        {"id": 0, "file": "_s0", "count": 99850, "deleted": 150},
+        {"id": 1, "file": "_s1", "count": 100000, "deleted": 0},
+        {"id": 2, "file": "_s2", "count": 50000, "deleted": 0}
     ]
 }
 ```
@@ -1165,6 +1285,8 @@ vendor/bin/phpunit --testdox
 - [x] `select()` / `except()` - Field projection
 - [x] `removeFields()` - Permanent field removal
 - [x] **Write buffer system** - 12x faster inserts on large databases (v2.3.0)
+- [x] **Primary key index** - O(1) key existence checks (v2.3.0)
+- [x] **Hash/Meta caching** - Reduced PBKDF2 overhead (v2.3.0)
 
 ---
 

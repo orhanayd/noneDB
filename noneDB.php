@@ -21,7 +21,7 @@ class noneDB {
 
     // Sharding configuration
     private $shardingEnabled=true;   // Enable/disable auto-sharding
-    private $shardSize=10000;         // Max records per shard
+    private $shardSize=100000;        // Max records per shard (100K)
     private $autoMigrate=true;        // Auto-migrate legacy DBs to sharded format
 
     // File locking configuration
@@ -30,7 +30,7 @@ class noneDB {
 
     // Write buffer configuration
     private $bufferEnabled=true;              // Enable/disable write buffering
-    private $bufferSizeLimit=2097152;         // 2MB buffer size limit per buffer
+    private $bufferSizeLimit=1048576;         // 1MB buffer size limit per buffer
     private $bufferCountLimit=10000;          // Max records per buffer (safety limit)
     private $bufferFlushOnRead=true;          // Flush buffer before read operations
     private $bufferFlushInterval=30;          // Seconds between auto-flush (0 = disabled)
@@ -40,11 +40,27 @@ class noneDB {
     private $bufferLastFlush=[];              // Track last flush time per DB/shard
     private $shutdownHandlerRegistered=false; // Track if shutdown handler is registered
 
+    // Performance cache (runtime) - v2.3.0
+    private $hashCache=[];                    // Cache dbname -> hash (PBKDF2 is expensive)
+    private $metaCache=[];                    // Cache dbname -> meta data
+    private $metaCacheTime=[];                // Cache timestamps for TTL
+    private $metaCacheTTL=1;                  // Meta cache TTL in seconds (short for consistency)
+
+    // Index configuration - v2.3.0
+    private $indexEnabled=true;               // Enable/disable primary key indexing
+    private $indexCache=[];                   // Runtime cache for index data
+
     /**
      * hash to db name for security
+     * Uses instance-level caching to avoid expensive PBKDF2 recomputation
      */
     private function hashDBName($dbname){
-        return hash_pbkdf2("sha256", $dbname, $this->secretKey, 1000, 20);
+        if(isset($this->hashCache[$dbname])){
+            return $this->hashCache[$dbname];
+        }
+        $hash = hash_pbkdf2("sha256", $dbname, $this->secretKey, 1000, 20);
+        $this->hashCache[$dbname] = $hash;
+        return $hash;
     }
 
     // ==========================================
@@ -300,6 +316,42 @@ class noneDB {
     }
 
     /**
+     * Get cached meta data with TTL support
+     * Avoids repeated file reads for frequently accessed meta
+     * @param string $dbname
+     * @param bool $forceRefresh Force refresh from disk
+     * @return array|null
+     */
+    private function getCachedMeta($dbname, $forceRefresh = false){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $now = time();
+
+        if(!$forceRefresh && isset($this->metaCache[$dbname])){
+            $cacheAge = $now - ($this->metaCacheTime[$dbname] ?? 0);
+            if($cacheAge < $this->metaCacheTTL){
+                return $this->metaCache[$dbname];
+            }
+        }
+
+        $meta = $this->readMeta($dbname);
+        if($meta !== null){
+            $this->metaCache[$dbname] = $meta;
+            $this->metaCacheTime[$dbname] = $now;
+        }
+        return $meta;
+    }
+
+    /**
+     * Invalidate meta cache for a database
+     * @param string $dbname
+     */
+    private function invalidateMetaCache($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        unset($this->metaCache[$dbname]);
+        unset($this->metaCacheTime[$dbname]);
+    }
+
+    /**
      * Write shard metadata with atomic locking
      * @param string $dbname
      * @param array $meta
@@ -308,7 +360,11 @@ class noneDB {
     private function writeMeta($dbname, $meta){
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $path = $this->getMetaPath($dbname);
-        return $this->atomicWrite($path, $meta, true);
+        $result = $this->atomicWrite($path, $meta, true);
+        if($result){
+            $this->invalidateMetaCache($dbname);
+        }
+        return $result;
     }
 
     /**
@@ -320,7 +376,11 @@ class noneDB {
     private function modifyMeta($dbname, callable $modifier){
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $path = $this->getMetaPath($dbname);
-        return $this->atomicModify($path, $modifier, null, true);
+        $result = $this->atomicModify($path, $modifier, null, true);
+        if($result['success']){
+            $this->invalidateMetaCache($dbname);
+        }
+        return $result;
     }
 
     /**
@@ -356,6 +416,329 @@ class noneDB {
     private function modifyShardData($dbname, $shardId, callable $modifier){
         $path = $this->getShardPath($dbname, $shardId);
         return $this->atomicModify($path, $modifier, array("data" => []));
+    }
+
+    // ==========================================
+    // PRIMARY KEY INDEX SYSTEM (v2.3.0)
+    // ==========================================
+
+    /**
+     * Get path to index file for a database
+     * Index provides O(1) key lookups instead of O(n) shard scans
+     * @param string $dbname
+     * @return string
+     */
+    private function getIndexPath($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $hash = $this->hashDBName($dbname);
+        return $this->dbDir . $hash . "-" . $dbname . ".nonedb.idx";
+    }
+
+    /**
+     * Read index file with caching
+     * @param string $dbname
+     * @return array|null
+     */
+    private function readIndex($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+
+        // Check runtime cache first
+        if(isset($this->indexCache[$dbname])){
+            return $this->indexCache[$dbname];
+        }
+
+        $path = $this->getIndexPath($dbname);
+        $index = $this->atomicRead($path, null);
+
+        if($index !== null){
+            $this->indexCache[$dbname] = $index;
+        }
+
+        return $index;
+    }
+
+    /**
+     * Write index file and update cache
+     * @param string $dbname
+     * @param array $index
+     * @return bool
+     */
+    private function writeIndex($dbname, $index){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $index['updated'] = time();
+        $path = $this->getIndexPath($dbname);
+        $result = $this->atomicWrite($path, $index, false);
+
+        if($result){
+            $this->indexCache[$dbname] = $index;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Invalidate index cache
+     * @param string $dbname
+     */
+    private function invalidateIndexCache($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        unset($this->indexCache[$dbname]);
+    }
+
+    /**
+     * Build index from existing database data
+     * Called automatically on first key-based lookup if index doesn't exist
+     * @param string $dbname
+     * @return array|null
+     */
+    private function buildIndex($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+
+        $index = [
+            'version' => 1,
+            'created' => time(),
+            'updated' => time(),
+            'totalRecords' => 0,
+            'entries' => []
+        ];
+
+        if($this->isSharded($dbname)){
+            $meta = $this->getCachedMeta($dbname);
+            if($meta === null){
+                return null;
+            }
+
+            $index['sharded'] = true;
+
+            foreach($meta['shards'] as $shard){
+                $shardData = $this->getShardData($dbname, $shard['id']);
+                $baseKey = $shard['id'] * $this->shardSize;
+
+                foreach($shardData['data'] as $localKey => $record){
+                    if($record !== null){
+                        $globalKey = $baseKey + $localKey;
+                        // Store as [shardId, localKey] for sharded DBs
+                        $index['entries'][(string)$globalKey] = [$shard['id'], $localKey];
+                        $index['totalRecords']++;
+                    }
+                }
+            }
+        } else {
+            $hash = $this->hashDBName($dbname);
+            $fullDBPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+            $rawData = $this->getData($fullDBPath);
+
+            if($rawData === false){
+                return null;
+            }
+
+            $index['sharded'] = false;
+
+            foreach($rawData['data'] as $key => $record){
+                if($record !== null){
+                    // Store just the position for non-sharded DBs
+                    $index['entries'][(string)$key] = $key;
+                    $index['totalRecords']++;
+                }
+            }
+        }
+
+        $this->writeIndex($dbname, $index);
+        return $index;
+    }
+
+    /**
+     * Get existing index or build it if missing
+     * @param string $dbname
+     * @return array|null
+     */
+    private function getOrBuildIndex($dbname){
+        if(!$this->indexEnabled){
+            return null;
+        }
+
+        $index = $this->readIndex($dbname);
+        if($index === null){
+            $index = $this->buildIndex($dbname);
+        }
+        return $index;
+    }
+
+    /**
+     * Update index after insert operation
+     * @param string $dbname
+     * @param array $keys Array of globalKey => localKey (or [shardId, localKey] for sharded)
+     * @param int|null $shardId Shard ID for sharded databases
+     */
+    private function updateIndexOnInsert($dbname, array $keys, $shardId = null){
+        if(!$this->indexEnabled){
+            return;
+        }
+
+        $index = $this->readIndex($dbname);
+        if($index === null){
+            return; // No index yet, will be built on first read
+        }
+
+        $isSharded = $index['sharded'] ?? false;
+
+        foreach($keys as $globalKey => $localKey){
+            if($isSharded && $shardId !== null){
+                $index['entries'][(string)$globalKey] = [$shardId, $localKey];
+            } else {
+                $index['entries'][(string)$globalKey] = $localKey;
+            }
+        }
+
+        $index['totalRecords'] = count($index['entries']);
+        $this->writeIndex($dbname, $index);
+    }
+
+    /**
+     * Update index after delete operation
+     * @param string $dbname
+     * @param array $deletedKeys Array of deleted global keys
+     */
+    private function updateIndexOnDelete($dbname, array $deletedKeys){
+        if(!$this->indexEnabled){
+            return;
+        }
+
+        $index = $this->readIndex($dbname);
+        if($index === null){
+            return;
+        }
+
+        foreach($deletedKeys as $key){
+            unset($index['entries'][(string)$key]);
+        }
+
+        $index['totalRecords'] = count($index['entries']);
+        $this->writeIndex($dbname, $index);
+    }
+
+    /**
+     * Find record by key using index (O(1) lookup)
+     * This is the core optimization - avoids loading entire shard
+     * @param string $dbname
+     * @param mixed $keyFilter Single key or array of keys
+     * @param array $index The index data
+     * @return array Found records with 'key' field added
+     */
+    private function findByKeyWithIndex($dbname, $keyFilter, $index){
+        $result = [];
+        $keys = is_array($keyFilter) ? $keyFilter : [$keyFilter];
+        $isSharded = $index['sharded'] ?? false;
+
+        foreach($keys as $globalKey){
+            $globalKey = (int)$globalKey;
+            $keyStr = (string)$globalKey;
+
+            if(!isset($index['entries'][$keyStr])){
+                continue; // Key doesn't exist
+            }
+
+            $entry = $index['entries'][$keyStr];
+
+            try {
+                if($isSharded){
+                    // Entry is [shardId, localKey]
+                    $shardId = $entry[0];
+                    $localKey = $entry[1];
+
+                    $shardData = $this->getShardData($dbname, $shardId);
+                    if(isset($shardData['data'][$localKey]) && $shardData['data'][$localKey] !== null){
+                        $record = $shardData['data'][$localKey];
+                        $record['key'] = $globalKey;
+                        $result[] = $record;
+                    }
+                } else {
+                    // Entry is just the position
+                    $hash = $this->hashDBName($dbname);
+                    $fullDBPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+                    $rawData = $this->getData($fullDBPath);
+
+                    if($rawData !== false && isset($rawData['data'][$entry]) && $rawData['data'][$entry] !== null){
+                        $record = $rawData['data'][$entry];
+                        $record['key'] = $globalKey;
+                        $result[] = $record;
+                    }
+                }
+            } catch(Exception $e){
+                // Index might be corrupted, invalidate it
+                $this->invalidateIndexCache($dbname);
+                @unlink($this->getIndexPath($dbname));
+                return null; // Signal to fall back to full scan
+            }
+        }
+
+        return $result;
+    }
+
+    // ==========================================
+    // PUBLIC INDEX API (v2.3.0)
+    // ==========================================
+
+    /**
+     * Enable or disable indexing
+     * @param bool $enable
+     */
+    public function enableIndexing($enable = true){
+        $this->indexEnabled = (bool)$enable;
+    }
+
+    /**
+     * Check if indexing is enabled
+     * @return bool
+     */
+    public function isIndexingEnabled(){
+        return $this->indexEnabled;
+    }
+
+    /**
+     * Manually rebuild index for a database
+     * @param string $dbname
+     * @return array ['success' => bool, 'totalRecords' => int, 'time' => float]
+     */
+    public function rebuildIndex($dbname){
+        $start = microtime(true);
+        $this->invalidateIndexCache($dbname);
+        @unlink($this->getIndexPath($dbname));
+
+        $index = $this->buildIndex($dbname);
+        $elapsed = (microtime(true) - $start) * 1000;
+
+        if($index === null){
+            return ['success' => false, 'error' => 'Failed to build index'];
+        }
+
+        return [
+            'success' => true,
+            'totalRecords' => $index['totalRecords'],
+            'time' => round($elapsed, 2) . 'ms'
+        ];
+    }
+
+    /**
+     * Get index information for a database
+     * @param string $dbname
+     * @return array|null
+     */
+    public function getIndexInfo($dbname){
+        $index = $this->readIndex($dbname);
+        if($index === null){
+            return null;
+        }
+
+        return [
+            'exists' => true,
+            'version' => $index['version'] ?? 1,
+            'created' => $index['created'] ?? null,
+            'updated' => $index['updated'] ?? null,
+            'totalRecords' => $index['totalRecords'] ?? 0,
+            'sharded' => $index['sharded'] ?? false,
+            'path' => $this->getIndexPath($dbname)
+        ];
     }
 
     /**
@@ -736,7 +1119,7 @@ class noneDB {
     private function flushAllShardBuffers($dbname, $meta = null){
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         if($meta === null){
-            $meta = $this->readMeta($dbname);
+            $meta = $this->getCachedMeta($dbname);
         }
         if($meta === null || !isset($meta['shards'])){
             return ['flushed' => 0];
@@ -1032,7 +1415,7 @@ class noneDB {
      */
     private function findSharded($dbname, $filters){
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
-        $meta = $this->readMeta($dbname);
+        $meta = $this->getCachedMeta($dbname);
         if($meta === null){
             return false;
         }
@@ -1042,10 +1425,21 @@ class noneDB {
             $this->flushAllShardBuffers($dbname, $meta);
         }
 
-        // Handle key-based search
+        // Handle key-based search - use index for O(1) lookup
         if(is_array($filters) && count($filters) > 0){
             $filterKeys = array_keys($filters);
             if($filterKeys[0] === "key"){
+                // Try to use index for fast lookup
+                $index = $this->getOrBuildIndex($dbname);
+                if($index !== null){
+                    $indexResult = $this->findByKeyWithIndex($dbname, $filters['key'], $index);
+                    if($indexResult !== null){
+                        return $indexResult;
+                    }
+                    // Index lookup failed, fall back to full scan below
+                }
+
+                // Fallback: Direct shard calculation (still fast for sharded DBs)
                 $result = [];
                 $keys = is_array($filters['key']) ? $filters['key'] : array($filters['key']);
 
@@ -1125,7 +1519,7 @@ class noneDB {
         $setValues = $data[1]['set'];
         $shardSize = $this->shardSize;
 
-        $meta = $this->readMeta($dbname);
+        $meta = $this->getCachedMeta($dbname);
         if($meta === null){
             return $main_response;
         }
@@ -1196,7 +1590,7 @@ class noneDB {
         $filters = $data;
         $shardSize = $this->shardSize;
 
-        $meta = $this->readMeta($dbname);
+        $meta = $this->getCachedMeta($dbname);
         if($meta === null){
             return $main_response;
         }
@@ -1206,8 +1600,9 @@ class noneDB {
             $this->flushAllShardBuffers($dbname, $meta);
         }
 
-        // Track deletions per shard for meta update
+        // Track deletions per shard for meta update and index
         $shardDeletions = [];
+        $deletedKeys = [];  // Track deleted keys for index update
         $totalDeleted = 0;
 
         // Delete from each shard atomically
@@ -1215,8 +1610,9 @@ class noneDB {
             $shardId = $shard['id'];
             $baseKey = $shardId * $shardSize;
             $deletedInShard = 0;
+            $shardDeletedKeys = [];
 
-            $this->modifyShardData($dbname, $shardId, function($shardData) use ($filters, $baseKey, &$deletedInShard) {
+            $this->modifyShardData($dbname, $shardId, function($shardData) use ($filters, $baseKey, &$deletedInShard, &$shardDeletedKeys) {
                 if($shardData === null || !isset($shardData['data'])){
                     return array("data" => []);
                 }
@@ -1243,6 +1639,7 @@ class noneDB {
 
                     if($match){
                         $shardData['data'][$localKey] = null;
+                        $shardDeletedKeys[] = $baseKey + $localKey;
                         $deletedInShard++;
                     }
                 }
@@ -1251,6 +1648,7 @@ class noneDB {
 
             if($deletedInShard > 0){
                 $shardDeletions[$shardId] = $deletedInShard;
+                $deletedKeys = array_merge($deletedKeys, $shardDeletedKeys);
                 $totalDeleted += $deletedInShard;
             }
         }
@@ -1271,6 +1669,9 @@ class noneDB {
                 $meta['deletedCount'] = ($meta['deletedCount'] ?? 0) + $totalDeleted;
                 return $meta;
             });
+
+            // Update index with deleted keys
+            $this->updateIndexOnDelete($dbname, $deletedKeys);
         }
 
         return array("n" => $totalDeleted);
@@ -1526,13 +1927,23 @@ class noneDB {
             $result=[];
             $filterKeys = array_keys($filters);
 
-            // Handle key-based search
+            // Handle key-based search - use index if available
             if(count($filterKeys) > 0 && $filterKeys[0]==="key"){
+                // Try index first for quick existence check
+                $index = $this->getOrBuildIndex($dbname);
+                if($index !== null){
+                    $indexResult = $this->findByKeyWithIndex($dbname, $filters['key'], $index);
+                    if($indexResult !== null){
+                        return $indexResult;
+                    }
+                }
+
+                // Fallback: direct array access (already have data loaded)
                 if(is_array($filters['key'])){
-                    foreach($filters['key'] as $index=>$key){
+                    foreach($filters['key'] as $idx=>$key){
                         if(isset($dbContents[(int)$key]) && $dbContents[(int)$key] !== null){
-                            $result[$index]=$dbContents[(int)$key];
-                            $result[$index]['key']=(int)$key;
+                            $result[$idx]=$dbContents[(int)$key];
+                            $result[$idx]['key']=(int)$key;
                         }
                     }
                 }else{
@@ -1769,8 +2180,9 @@ class noneDB {
         // Use atomic modify to find and delete in single locked operation
         $filters = $data;
         $deletedCount = 0;
+        $deletedKeys = [];  // Track deleted keys for index update
 
-        $result = $this->modifyData($fullDBPath, function($buffer) use ($filters, &$deletedCount) {
+        $result = $this->modifyData($fullDBPath, function($buffer) use ($filters, &$deletedCount, &$deletedKeys) {
             if($buffer === null || !isset($buffer['data'])){
                 return array("data" => []);
             }
@@ -1796,6 +2208,7 @@ class noneDB {
                 }
                 if($match){
                     $buffer['data'][$key] = null;
+                    $deletedKeys[] = $key;
                     $deletedCount++;
                 }
             }
@@ -1805,6 +2218,11 @@ class noneDB {
         if(!$result['success']){
             $main_response['error'] = $result['error'] ?? 'Delete failed';
             return $main_response;
+        }
+
+        // Update index with deleted keys
+        if($deletedCount > 0){
+            $this->updateIndexOnDelete($dbname, $deletedKeys);
         }
 
         $main_response['n'] = $deletedCount;
@@ -2155,7 +2573,7 @@ class noneDB {
             return false;
         }
 
-        $meta = $this->readMeta($dbname);
+        $meta = $this->getCachedMeta($dbname);
         if($meta === null){
             return false;
         }
@@ -2257,7 +2675,7 @@ class noneDB {
         ];
 
         if($this->isSharded($dbname)){
-            $meta = $this->readMeta($dbname);
+            $meta = $this->getCachedMeta($dbname);
             if($meta !== null && isset($meta['shards'])){
                 foreach($meta['shards'] as $shard){
                     $bufferPath = $this->getShardBufferPath($dbname, $shard['id']);
@@ -2360,6 +2778,11 @@ class noneDB {
             // Write compacted data back
             $this->insertData($fullDBPath, array("data" => $allRecords));
 
+            // Rebuild index after compaction (keys are reassigned)
+            $this->invalidateIndexCache($dbname);
+            @unlink($this->getIndexPath($dbname));
+            $this->buildIndex($dbname);
+
             $result['success'] = true;
             $result['freedSlots'] = $freedSlots;
             $result['totalRecords'] = count($allRecords);
@@ -2368,7 +2791,7 @@ class noneDB {
         }
 
         // Handle sharded database
-        $meta = $this->readMeta($dbname);
+        $meta = $this->getCachedMeta($dbname);
         if($meta === null){
             $result['status'] = 'meta_read_error';
             return $result;
@@ -2423,6 +2846,11 @@ class noneDB {
         }
 
         $this->writeMeta($dbname, $newMeta);
+
+        // Rebuild index after compaction (keys are reassigned)
+        $this->invalidateIndexCache($dbname);
+        @unlink($this->getIndexPath($dbname));
+        $this->buildIndex($dbname);
 
         $result['success'] = true;
         $result['freedSlots'] = $freedSlots;
