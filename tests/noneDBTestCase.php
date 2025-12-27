@@ -45,6 +45,9 @@ abstract class noneDBTestCase extends TestCase
 
         // Set noneDB to use test directory
         $this->setPrivateProperty('dbDir', $this->testDbDir);
+
+        // Buffer is enabled by default (v2.3.0+)
+        // getDatabaseContents() flushes buffer automatically for consistency
     }
 
     /**
@@ -193,12 +196,16 @@ abstract class noneDBTestCase extends TestCase
 
     /**
      * Get database contents directly from file
+     * Flushes any buffered data first to ensure consistency
      *
      * @param string $dbName Database name
      * @return array|null
      */
     protected function getDatabaseContents(string $dbName): ?array
     {
+        // Flush buffer first to ensure all data is written to file
+        $this->noneDB->flush($dbName);
+
         $filePath = $this->getDbFilePath($dbName);
 
         if (!file_exists($filePath)) {

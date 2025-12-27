@@ -43,8 +43,8 @@ function generateRecord($i) {
 }
 
 echo blue("╔════════════════════════════════════════════════════════════════════╗\n");
-echo blue("║              noneDB Performance Benchmark v2.2                     ║\n");
-echo blue("║         Atomic File Locking - Thread-Safe Operations               ║\n");
+echo blue("║              noneDB Performance Benchmark v2.3                     ║\n");
+echo blue("║       Write Buffer + Atomic Locking - Thread-Safe Operations       ║\n");
 echo blue("╚════════════════════════════════════════════════════════════════════╝\n\n");
 
 echo "PHP Version: " . PHP_VERSION . "\n";

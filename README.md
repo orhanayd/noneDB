@@ -1,6 +1,6 @@
 # noneDB
 
-[![Version](https://img.shields.io/badge/version-2.2.0-orange.svg)](CHANGES.md)
+[![Version](https://img.shields.io/badge/version-2.3.0-orange.svg)](CHANGES.md)
 [![PHP Version](https://img.shields.io/badge/PHP-7.4%2B-blue.svg)](https://php.net)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-723%20passed-brightgreen.svg)](tests/)
@@ -14,6 +14,7 @@
 - **No database server required** - just include and use
 - **JSON-based storage** with PBKDF2-hashed filenames
 - **Atomic file locking** - thread-safe concurrent operations
+- **Write buffer system** - 12x faster inserts on large databases
 - **Auto-sharding** for large datasets (500K+ records tested)
 - **Method chaining** (fluent interface) for clean queries
 - Full CRUD operations with advanced filtering
@@ -81,6 +82,12 @@ private $autoCreateDB = true;          // Auto-create databases on first use
 private $shardingEnabled = true;       // Enable auto-sharding for large datasets
 private $shardSize = 10000;            // Records per shard (default: 10,000)
 private $autoMigrate = true;           // Auto-migrate when threshold reached
+
+// Write buffer configuration (v2.3.0+)
+private $bufferEnabled = true;         // Enable write buffer for fast inserts
+private $bufferSizeLimit = 2097152;    // Buffer size limit (2MB default)
+private $bufferCountLimit = 10000;     // Max records per buffer
+private $bufferFlushInterval = 30;     // Auto-flush interval in seconds
 ```
 
 ### Security Warnings
@@ -722,6 +729,174 @@ private $autoMigrate = false;
 
 ---
 
+## Write Buffer System
+
+noneDB v2.3 introduces a **write buffer system** for dramatically faster insert operations. Instead of reading and writing the entire database file for each insert, records are buffered and flushed in batches.
+
+### The Problem (Before v2.3)
+
+Every insert required reading and writing the ENTIRE database file:
+
+```
+100K records (~10MB) → Each insert: Read 10MB → Decode → Append → Encode → Write 10MB
+1000 inserts on 100K DB = ~500 seconds (8+ minutes!)
+```
+
+### The Solution
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Before v2.3: Full File Read/Write Per Insert                  │
+├─────────────────────────────────────────────────────────────────┤
+│  insert() → read entire DB → append 1 record → write entire DB │
+│  Time per insert: O(n) where n = total records                 │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  After v2.3: Append-Only Buffer                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  insert() → append to buffer file (no read!)                    │
+│  When buffer full → flush to main DB                            │
+│  Time per insert: O(1) constant time!                          │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Performance Improvement
+
+**Non-sharded database (single file):**
+| Scenario | Without Buffer | With Buffer | Speedup |
+|----------|----------------|-------------|---------|
+| Insert on 100K DB | 101 ms/insert | 8.5 ms/insert | **12x** |
+| 1000 inserts (100K DB) | ~100 sec | ~8.5 sec | **12x** |
+
+> **Note:** When sharding is enabled (default), each shard is already small (~1MB), so the buffer advantage is less pronounced. The buffer provides the most benefit for non-sharded databases or individual large shards.
+
+### How It Works
+
+1. **Inserts go to buffer file** (JSONL format - one JSON per line)
+2. **No full-file read** required for each insert
+3. **Auto-flush when:**
+   - Buffer reaches 2MB size limit
+   - 30 seconds pass since last flush
+   - Graceful shutdown occurs (shutdown handler)
+4. **Read operations flush first** (flush-before-read for consistency)
+
+### Buffer File Format
+
+```
+hash-dbname.nonedb           # Main database
+hash-dbname.nonedb.buffer    # Write buffer (JSONL)
+```
+
+For sharded databases, each shard has its own buffer:
+```
+hash-dbname_s0.nonedb.buffer  # Shard 0 buffer
+hash-dbname_s1.nonedb.buffer  # Shard 1 buffer
+```
+
+### Buffer API
+
+#### flush($dbname)
+
+Manually flush buffer to main database.
+
+```php
+$result = $db->flush("users");
+// Returns: ["success" => true, "flushed" => 150]
+```
+
+#### flushAllBuffers()
+
+Flush all database buffers.
+
+```php
+$db->flushAllBuffers();
+```
+
+#### getBufferInfo($dbname)
+
+Get buffer status and statistics.
+
+```php
+$info = $db->getBufferInfo("users");
+// Returns:
+// [
+//     "enabled" => true,
+//     "sizeLimit" => 2097152,
+//     "countLimit" => 10000,
+//     "flushInterval" => 30,
+//     "buffers" => [
+//         "main" => ["size" => 15360, "records" => 150]
+//     ]
+// ]
+```
+
+#### enableBuffering($enable)
+
+Enable or disable write buffering.
+
+```php
+$db->enableBuffering(true);   // Enable
+$db->enableBuffering(false);  // Disable (direct writes)
+```
+
+#### isBufferingEnabled()
+
+Check if buffering is enabled.
+
+```php
+if ($db->isBufferingEnabled()) {
+    echo "Buffer is active";
+}
+```
+
+#### setBufferSizeLimit($bytes)
+
+Set buffer size threshold for auto-flush.
+
+```php
+$db->setBufferSizeLimit(1048576);  // 1MB
+```
+
+#### setBufferFlushInterval($seconds)
+
+Set time interval for auto-flush.
+
+```php
+$db->setBufferFlushInterval(60);  // Flush every 60 seconds
+```
+
+#### setBufferCountLimit($count)
+
+Set maximum records per buffer.
+
+```php
+$db->setBufferCountLimit(5000);  // Flush after 5000 records
+```
+
+### Transparency
+
+The buffer system is **fully transparent** - existing code works without modification:
+
+```php
+// This code works identically before and after v2.3
+$db->insert("users", ["name" => "John"]);
+$users = $db->find("users", []);  // Buffer auto-flushed before read
+```
+
+### When Buffer Flushes Automatically
+
+| Trigger | Description |
+|---------|-------------|
+| Size limit | Buffer reaches 2MB (configurable) |
+| Record count | Buffer has 10,000 records (configurable) |
+| Time interval | 30 seconds since last flush (configurable) |
+| Read operation | Any `find()`, `count()`, etc. flushes first |
+| Write operation | `update()` and `delete()` flush first |
+| Shutdown | PHP shutdown handler flushes all buffers |
+
+---
+
 ## Error Handling
 
 Operations return error information when they fail:
@@ -756,43 +931,43 @@ Tested on PHP 8.2, macOS (Apple Silicon M-series)
 ]
 ```
 
-### Write Operations
+### Write Operations (Bulk Insert)
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| insert() | 12 ms | 16 ms | 60 ms | 236 ms | 547 ms | 3.5 s |
-| update() | 10 ms | 12 ms | 38 ms | 178 ms | 347 ms | 1.6 s |
-| delete() | 9 ms | 13 ms | 42 ms | 163 ms | 348 ms | 1.6 s |
+| insert() | 23 ms | 36 ms | 81 ms | 452 ms | 800 ms | 5.5 s |
+| update() | 12 ms | 19 ms | 108 ms | 639 ms | 1.2 s | 7.7 s |
+| delete() | 12 ms | 18 ms | 102 ms | 568 ms | 1.3 s | 6.6 s |
 
 ### Read Operations
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| find(all) | 9 ms | 13 ms | 71 ms | 272 ms | 676 ms | 2.8 s |
-| find(key) | 9 ms | 12 ms | 26 ms | 23 ms | 23 ms | **23 ms** |
-| find(filter) | 9 ms | 13 ms | 59 ms | 261 ms | 497 ms | 2.5 s |
+| find(all) | 18 ms | 33 ms | 113 ms | 590 ms | 1.3 s | 6.3 s |
+| find(key) | 12 ms | 17 ms | 33 ms | 79 ms | 136 ms | 580 ms |
+| find(filter) | 12 ms | 18 ms | 108 ms | 528 ms | 1.1 s | 5.3 s |
 
-> **Note:** `find(key)` stays constant at ~23ms even at 500K records thanks to sharding - only the relevant shard is read!
+> **Note:** `find(key)` benefits from sharding - only the relevant shard is read.
 
 ### Query & Aggregation
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| count() | 9 ms | 13 ms | 52 ms | 267 ms | 641 ms | 2.6 s |
-| distinct() | 10 ms | 13 ms | 59 ms | 305 ms | 757 ms | 3.2 s |
-| sum() | 10 ms | 13 ms | 62 ms | 278 ms | 746 ms | 3.1 s |
-| like() | 12 ms | 14 ms | 71 ms | 337 ms | 717 ms | 3.7 s |
-| between() | 10 ms | 14 ms | 70 ms | 300 ms | 633 ms | 3.2 s |
-| sort() | 12 ms | 23 ms | 174 ms | 914 ms | 2.1 s | 11.9 s |
-| first() | 13 ms | 13 ms | 60 ms | 365 ms | 618 ms | 2.9 s |
-| exists() | 10 ms | 13 ms | 60 ms | 299 ms | 677 ms | 3.1 s |
+| count() | 12 ms | 18 ms | 101 ms | 531 ms | 1.2 s | 5.8 s |
+| distinct() | 12 ms | 18 ms | 111 ms | 667 ms | 1.5 s | 7 s |
+| sum() | 12 ms | 18 ms | 110 ms | 665 ms | 1.5 s | 6.9 s |
+| like() | 12 ms | 20 ms | 131 ms | 774 ms | 1.7 s | 8.1 s |
+| between() | 12 ms | 19 ms | 116 ms | 651 ms | 1.6 s | 7.6 s |
+| sort() | 13 ms | 35 ms | 334 ms | 1.9 s | 4.9 s | 25.6 s |
+| first() | 12 ms | 18 ms | 117 ms | 591 ms | 1.5 s | 6.9 s |
+| exists() | 11 ms | 18 ms | 138 ms | 619 ms | 1.4 s | 7.1 s |
 
 ### Method Chaining (v2.1+)
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| whereIn() | 17 ms | 13 ms | 59 ms | 349 ms | 776 ms | 4.3 s |
-| orWhere() | 11 ms | 14 ms | 66 ms | 352 ms | 870 ms | 4.5 s |
-| search() | 12 ms | 16 ms | 69 ms | 372 ms | 839 ms | 4.7 s |
-| groupBy() | 10 ms | 13 ms | 60 ms | 357 ms | 733 ms | 4.7 s |
-| select() | 10 ms | 15 ms | 109 ms | 584 ms | 1.2 s | 5.6 s |
-| complex chain | 13 ms | 15 ms | 69 ms | 396 ms | 798 ms | 4.1 s |
+| whereIn() | 12 ms | 19 ms | 223 ms | 678 ms | 1.6 s | 10.2 s |
+| orWhere() | 12 ms | 21 ms | 188 ms | 753 ms | 1.8 s | 12.2 s |
+| search() | 12 ms | 21 ms | 225 ms | 775 ms | 1.8 s | 11.7 s |
+| groupBy() | 12 ms | 19 ms | 161 ms | 731 ms | 1.7 s | 11.8 s |
+| select() | 12 ms | 21 ms | 215 ms | 1.2 s | 2.6 s | 12.9 s |
+| complex chain | 12 ms | 21 ms | 198 ms | 808 ms | 1.8 s | 10.3 s |
 
 > **Complex chain:** `where() + whereIn() + between() + select() + sort() + limit()`
 
@@ -893,8 +1068,9 @@ $db->insert("test'db", ["data" => "test"]);  // OK - apostrophe allowed
 project/
 ├── noneDB.php
 └── db/
-    ├── a1b2c3...-users.nonedb       # Database file (JSON)
-    ├── a1b2c3...-users.nonedbinfo   # Metadata (creation time)
+    ├── a1b2c3...-users.nonedb        # Database file (JSON)
+    ├── a1b2c3...-users.nonedb.buffer # Write buffer (JSONL, v2.3.0+)
+    ├── a1b2c3...-users.nonedbinfo    # Metadata (creation time)
     ├── d4e5f6...-posts.nonedb
     └── d4e5f6...-posts.nonedbinfo
 ```
@@ -904,11 +1080,13 @@ project/
 project/
 ├── noneDB.php
 └── db/
-    ├── a1b2c3...-users.nonedb.meta  # Shard metadata
-    ├── a1b2c3...-users_s0.nonedb    # Shard 0
-    ├── a1b2c3...-users_s1.nonedb    # Shard 1
-    ├── a1b2c3...-users_s2.nonedb    # Shard 2
-    └── a1b2c3...-users.nonedbinfo   # Creation time
+    ├── a1b2c3...-users.nonedb.meta   # Shard metadata
+    ├── a1b2c3...-users_s0.nonedb     # Shard 0
+    ├── a1b2c3...-users_s0.nonedb.buffer  # Shard 0 buffer (v2.3.0+)
+    ├── a1b2c3...-users_s1.nonedb     # Shard 1
+    ├── a1b2c3...-users_s1.nonedb.buffer  # Shard 1 buffer (v2.3.0+)
+    ├── a1b2c3...-users_s2.nonedb     # Shard 2
+    └── a1b2c3...-users.nonedbinfo    # Creation time
 ```
 
 Database file format:
@@ -986,6 +1164,7 @@ vendor/bin/phpunit --testdox
 - [x] `groupBy()` / `having()` - Grouping and aggregate filtering
 - [x] `select()` / `except()` - Field projection
 - [x] `removeFields()` - Permanent field removal
+- [x] **Write buffer system** - 12x faster inserts on large databases (v2.3.0)
 
 ---
 

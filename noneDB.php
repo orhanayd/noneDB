@@ -28,6 +28,18 @@ class noneDB {
     private $lockTimeout=5;           // Max seconds to wait for lock
     private $lockRetryDelay=10000;    // Microseconds between lock attempts (10ms)
 
+    // Write buffer configuration
+    private $bufferEnabled=true;              // Enable/disable write buffering
+    private $bufferSizeLimit=2097152;         // 2MB buffer size limit per buffer
+    private $bufferCountLimit=10000;          // Max records per buffer (safety limit)
+    private $bufferFlushOnRead=true;          // Flush buffer before read operations
+    private $bufferFlushInterval=30;          // Seconds between auto-flush (0 = disabled)
+    private $bufferAutoFlushOnShutdown=true;  // Register shutdown handler for flush
+
+    // Buffer state tracking (runtime)
+    private $bufferLastFlush=[];              // Track last flush time per DB/shard
+    private $shutdownHandlerRegistered=false; // Track if shutdown handler is registered
+
     /**
      * hash to db name for security
      */
@@ -364,6 +376,381 @@ class noneDB {
         return $globalKey % $this->shardSize;
     }
 
+    // ==========================================
+    // WRITE BUFFER METHODS
+    // ==========================================
+
+    /**
+     * Get buffer file path for non-sharded database
+     * @param string $dbname
+     * @return string
+     */
+    private function getBufferPath($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $hash = $this->hashDBName($dbname);
+        return $this->dbDir . $hash . "-" . $dbname . ".nonedb.buffer";
+    }
+
+    /**
+     * Get buffer file path for a specific shard
+     * @param string $dbname
+     * @param int $shardId
+     * @return string
+     */
+    private function getShardBufferPath($dbname, $shardId){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $hash = $this->hashDBName($dbname);
+        return $this->dbDir . $hash . "-" . $dbname . "_s" . $shardId . ".nonedb.buffer";
+    }
+
+    /**
+     * Check if buffer exists and has content
+     * @param string $bufferPath
+     * @return bool
+     */
+    private function hasBuffer($bufferPath){
+        clearstatcache(true, $bufferPath);
+        return file_exists($bufferPath) && filesize($bufferPath) > 0;
+    }
+
+    /**
+     * Get buffer file size in bytes
+     * @param string $bufferPath
+     * @return int
+     */
+    private function getBufferSize($bufferPath){
+        clearstatcache(true, $bufferPath);
+        if(!file_exists($bufferPath)){
+            return 0;
+        }
+        return (int) filesize($bufferPath);
+    }
+
+    /**
+     * Count records in buffer file
+     * @param string $bufferPath
+     * @return int
+     */
+    private function getBufferRecordCount($bufferPath){
+        if(!$this->hasBuffer($bufferPath)){
+            return 0;
+        }
+        $count = 0;
+        $fp = fopen($bufferPath, 'rb');
+        if($fp === false){
+            return 0;
+        }
+        // Lock for reading
+        flock($fp, LOCK_SH);
+        while(($line = fgets($fp)) !== false){
+            $line = trim($line);
+            if($line !== ''){
+                $count++;
+            }
+        }
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return $count;
+    }
+
+    /**
+     * Atomically append records to buffer file (JSONL format)
+     * This is fast because it doesn't read the entire file
+     *
+     * @param string $bufferPath
+     * @param array $records Array of records to append
+     * @return array ['success' => bool, 'count' => int, 'error' => string|null]
+     */
+    private function atomicAppendToBuffer($bufferPath, array $records){
+        if(empty($records)){
+            return ['success' => true, 'count' => 0, 'error' => null];
+        }
+
+        // Ensure directory exists
+        $dir = dirname($bufferPath);
+        if(!is_dir($dir)){
+            mkdir($dir, 0755, true);
+        }
+
+        // Open in append mode
+        $fp = fopen($bufferPath, 'ab');
+        if($fp === false){
+            return ['success' => false, 'count' => 0, 'error' => 'Failed to open buffer file'];
+        }
+
+        $startTime = microtime(true);
+        $locked = false;
+
+        // Try to acquire exclusive lock with timeout
+        while(!$locked && (microtime(true) - $startTime) < $this->lockTimeout){
+            $locked = flock($fp, LOCK_EX | LOCK_NB);
+            if(!$locked){
+                usleep($this->lockRetryDelay);
+            }
+        }
+
+        if(!$locked){
+            $locked = flock($fp, LOCK_EX);
+        }
+
+        if(!$locked){
+            fclose($fp);
+            return ['success' => false, 'count' => 0, 'error' => 'Failed to acquire lock'];
+        }
+
+        try {
+            $written = 0;
+            foreach($records as $record){
+                $line = json_encode($record) . "\n";
+                if(fwrite($fp, $line) !== false){
+                    $written++;
+                }
+            }
+            fflush($fp);
+            return ['success' => true, 'count' => $written, 'error' => null];
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+        }
+    }
+
+    /**
+     * Read all records from buffer file (JSONL format)
+     * @param string $bufferPath
+     * @return array Array of records
+     */
+    private function readBufferRecords($bufferPath){
+        if(!$this->hasBuffer($bufferPath)){
+            return [];
+        }
+
+        $fp = fopen($bufferPath, 'rb');
+        if($fp === false){
+            return [];
+        }
+
+        $startTime = microtime(true);
+        $locked = false;
+
+        while(!$locked && (microtime(true) - $startTime) < $this->lockTimeout){
+            $locked = flock($fp, LOCK_SH | LOCK_NB);
+            if(!$locked){
+                usleep($this->lockRetryDelay);
+            }
+        }
+
+        if(!$locked){
+            $locked = flock($fp, LOCK_SH);
+        }
+
+        if(!$locked){
+            fclose($fp);
+            return [];
+        }
+
+        $records = [];
+        try {
+            while(($line = fgets($fp)) !== false){
+                $line = trim($line);
+                if($line !== ''){
+                    $record = json_decode($line, true);
+                    if($record !== null && json_last_error() === JSON_ERROR_NONE){
+                        $records[] = $record;
+                    }
+                    // Skip corrupted lines silently
+                }
+            }
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+        }
+
+        return $records;
+    }
+
+    /**
+     * Clear buffer file (delete it)
+     * @param string $bufferPath
+     * @return bool
+     */
+    private function clearBuffer($bufferPath){
+        clearstatcache(true, $bufferPath);
+        if(file_exists($bufferPath)){
+            return @unlink($bufferPath);
+        }
+        return true;
+    }
+
+    /**
+     * Flush buffer to main database (non-sharded)
+     * @param string $dbname
+     * @return array ['success' => bool, 'flushed' => int, 'error' => string|null]
+     */
+    private function flushBufferToMain($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $bufferPath = $this->getBufferPath($dbname);
+
+        if(!$this->hasBuffer($bufferPath)){
+            return ['success' => true, 'flushed' => 0, 'error' => null];
+        }
+
+        // Read buffer records
+        $bufferRecords = $this->readBufferRecords($bufferPath);
+        if(empty($bufferRecords)){
+            $this->clearBuffer($bufferPath);
+            return ['success' => true, 'flushed' => 0, 'error' => null];
+        }
+
+        // Rename buffer to temp file (atomic on POSIX)
+        $tempPath = $bufferPath . '.flushing';
+        if(!@rename($bufferPath, $tempPath)){
+            return ['success' => false, 'flushed' => 0, 'error' => 'Failed to rename buffer'];
+        }
+
+        // Get main DB path
+        $hash = $this->hashDBName($dbname);
+        $mainPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+
+        // Atomically merge buffer into main DB
+        $result = $this->atomicModify($mainPath, function($data) use ($bufferRecords) {
+            if($data === null){
+                $data = array("data" => []);
+            }
+            foreach($bufferRecords as $record){
+                $data['data'][] = $record;
+            }
+            return $data;
+        }, array("data" => []));
+
+        if($result['success']){
+            // Delete temp file only after successful merge
+            @unlink($tempPath);
+            // Update last flush time
+            $this->bufferLastFlush[$dbname] = time();
+            return ['success' => true, 'flushed' => count($bufferRecords), 'error' => null];
+        } else {
+            // Restore buffer from temp
+            @rename($tempPath, $bufferPath);
+            return ['success' => false, 'flushed' => 0, 'error' => $result['error']];
+        }
+    }
+
+    /**
+     * Flush buffer to shard
+     * @param string $dbname
+     * @param int $shardId
+     * @return array ['success' => bool, 'flushed' => int, 'error' => string|null]
+     */
+    private function flushShardBuffer($dbname, $shardId){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $bufferPath = $this->getShardBufferPath($dbname, $shardId);
+
+        if(!$this->hasBuffer($bufferPath)){
+            return ['success' => true, 'flushed' => 0, 'error' => null];
+        }
+
+        $bufferRecords = $this->readBufferRecords($bufferPath);
+        if(empty($bufferRecords)){
+            $this->clearBuffer($bufferPath);
+            return ['success' => true, 'flushed' => 0, 'error' => null];
+        }
+
+        // Rename buffer to temp
+        $tempPath = $bufferPath . '.flushing';
+        if(!@rename($bufferPath, $tempPath)){
+            return ['success' => false, 'flushed' => 0, 'error' => 'Failed to rename buffer'];
+        }
+
+        // Atomically merge into shard
+        $result = $this->modifyShardData($dbname, $shardId, function($data) use ($bufferRecords) {
+            foreach($bufferRecords as $record){
+                $data['data'][] = $record;
+            }
+            return $data;
+        });
+
+        if($result['success']){
+            @unlink($tempPath);
+            $flushKey = $dbname . '_s' . $shardId;
+            $this->bufferLastFlush[$flushKey] = time();
+            return ['success' => true, 'flushed' => count($bufferRecords), 'error' => null];
+        } else {
+            @rename($tempPath, $bufferPath);
+            return ['success' => false, 'flushed' => 0, 'error' => $result['error']];
+        }
+    }
+
+    /**
+     * Check if buffer needs flushing (size, count, or time based)
+     * @param string $bufferPath
+     * @param string $flushKey Key for tracking last flush time
+     * @return bool
+     */
+    private function shouldFlushBuffer($bufferPath, $flushKey){
+        if(!$this->hasBuffer($bufferPath)){
+            return false;
+        }
+
+        // Check size limit
+        $size = $this->getBufferSize($bufferPath);
+        if($size >= $this->bufferSizeLimit){
+            return true;
+        }
+
+        // Check count limit
+        $count = $this->getBufferRecordCount($bufferPath);
+        if($count >= $this->bufferCountLimit){
+            return true;
+        }
+
+        // Check time-based flush
+        if($this->bufferFlushInterval > 0){
+            $lastFlush = $this->bufferLastFlush[$flushKey] ?? 0;
+            if((time() - $lastFlush) >= $this->bufferFlushInterval){
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Register shutdown handler for flushing all buffers
+     */
+    private function registerShutdownHandler(){
+        if($this->shutdownHandlerRegistered){
+            return;
+        }
+        if($this->bufferAutoFlushOnShutdown){
+            register_shutdown_function([$this, 'flushAllBuffers']);
+            $this->shutdownHandlerRegistered = true;
+        }
+    }
+
+    /**
+     * Flush all shard buffers for a database
+     * @param string $dbname
+     * @param array|null $meta Optional meta data (avoids re-reading)
+     * @return array ['flushed' => total records flushed]
+     */
+    private function flushAllShardBuffers($dbname, $meta = null){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        if($meta === null){
+            $meta = $this->readMeta($dbname);
+        }
+        if($meta === null || !isset($meta['shards'])){
+            return ['flushed' => 0];
+        }
+
+        $totalFlushed = 0;
+        foreach($meta['shards'] as $shard){
+            $result = $this->flushShardBuffer($dbname, $shard['id']);
+            $totalFlushed += $result['flushed'];
+        }
+
+        return ['flushed' => $totalFlushed];
+    }
+
     /**
      * Migrate a legacy (non-sharded) database to sharded format
      * @param string $dbname
@@ -481,10 +868,27 @@ class noneDB {
             $validItems[] = $data;
         }
 
-        // Atomic insert using meta-level locking
+        // Use buffered insert if enabled
+        if($this->bufferEnabled){
+            return $this->insertShardedBuffered($dbname, $validItems);
+        }
+
+        // Non-buffered insert (original method)
+        return $this->insertShardedDirect($dbname, $validItems);
+    }
+
+    /**
+     * Buffered insert for sharded database - writes to per-shard buffers
+     * @param string $dbname
+     * @param array $validItems Pre-validated items
+     * @return array
+     */
+    private function insertShardedBuffered($dbname, array $validItems){
+        $this->registerShutdownHandler();
+
         $shardSize = $this->shardSize;
         $insertedCount = 0;
-        $shardWrites = []; // Collect shard modifications
+        $shardWrites = []; // Collect items per shard
 
         // Atomically update meta and calculate which shards to write
         $metaResult = $this->modifyMeta($dbname, function($meta) use ($validItems, $shardSize, &$insertedCount, &$shardWrites) {
@@ -499,7 +903,6 @@ class noneDB {
             foreach($validItems as $item){
                 // Check if current shard is full
                 if($currentShardCount >= $shardSize){
-                    // Create new shard
                     $shardId++;
                     $meta['shards'][] = array(
                         "id" => $shardId,
@@ -511,15 +914,13 @@ class noneDB {
                     $currentShardCount = 0;
                 }
 
-                // Track which items go to which shard
                 if(!isset($shardWrites[$shardId])){
-                    $shardWrites[$shardId] = ['items' => [], 'shardIdx' => $lastShardIdx];
+                    $shardWrites[$shardId] = ['items' => []];
                 }
                 $shardWrites[$shardId]['items'][] = $item;
                 $currentShardCount++;
                 $insertedCount++;
 
-                // Update meta counts
                 $meta['shards'][$lastShardIdx]['count']++;
                 $meta['totalRecords']++;
                 $meta['nextKey']++;
@@ -529,11 +930,85 @@ class noneDB {
         });
 
         if(!$metaResult['success'] || $metaResult['data'] === null){
-            $main_response['error'] = $metaResult['error'] ?? 'Meta update failed';
-            return $main_response;
+            return array("n" => 0, "error" => $metaResult['error'] ?? 'Meta update failed');
         }
 
-        // Now atomically write to each affected shard
+        // Write to each affected shard's buffer
+        foreach($shardWrites as $shardId => $writeInfo){
+            $bufferPath = $this->getShardBufferPath($dbname, $shardId);
+            $flushKey = $dbname . '_s' . $shardId;
+
+            // Check if buffer needs flushing before write
+            if($this->shouldFlushBuffer($bufferPath, $flushKey)){
+                $this->flushShardBuffer($dbname, $shardId);
+            }
+
+            // Append to shard buffer (fast)
+            $this->atomicAppendToBuffer($bufferPath, $writeInfo['items']);
+
+            // Check again after write
+            if($this->shouldFlushBuffer($bufferPath, $flushKey)){
+                $this->flushShardBuffer($dbname, $shardId);
+            }
+        }
+
+        return array("n" => $insertedCount);
+    }
+
+    /**
+     * Direct insert for sharded database without buffer
+     * @param string $dbname
+     * @param array $validItems Pre-validated items
+     * @return array
+     */
+    private function insertShardedDirect($dbname, array $validItems){
+        $shardSize = $this->shardSize;
+        $insertedCount = 0;
+        $shardWrites = [];
+
+        // Atomically update meta and calculate which shards to write
+        $metaResult = $this->modifyMeta($dbname, function($meta) use ($validItems, $shardSize, &$insertedCount, &$shardWrites) {
+            if($meta === null){
+                return null;
+            }
+
+            $lastShardIdx = count($meta['shards']) - 1;
+            $shardId = $meta['shards'][$lastShardIdx]['id'];
+            $currentShardCount = $meta['shards'][$lastShardIdx]['count'] + $meta['shards'][$lastShardIdx]['deleted'];
+
+            foreach($validItems as $item){
+                if($currentShardCount >= $shardSize){
+                    $shardId++;
+                    $meta['shards'][] = array(
+                        "id" => $shardId,
+                        "file" => "_s" . $shardId,
+                        "count" => 0,
+                        "deleted" => 0
+                    );
+                    $lastShardIdx = count($meta['shards']) - 1;
+                    $currentShardCount = 0;
+                }
+
+                if(!isset($shardWrites[$shardId])){
+                    $shardWrites[$shardId] = ['items' => [], 'shardIdx' => $lastShardIdx];
+                }
+                $shardWrites[$shardId]['items'][] = $item;
+                $currentShardCount++;
+                $insertedCount++;
+
+                $meta['shards'][$lastShardIdx]['count']++;
+                $meta['totalRecords']++;
+                $meta['nextKey']++;
+            }
+
+            return $meta;
+        });
+
+        if(!$metaResult['success'] || $metaResult['data'] === null){
+            return array("n" => 0, "error" => $metaResult['error'] ?? 'Meta update failed');
+        }
+
+        // Atomically write to each affected shard
         foreach($shardWrites as $shardId => $writeInfo){
             $this->modifyShardData($dbname, $shardId, function($shardData) use ($writeInfo) {
                 if($shardData === null){
@@ -560,6 +1035,11 @@ class noneDB {
         $meta = $this->readMeta($dbname);
         if($meta === null){
             return false;
+        }
+
+        // Flush all shard buffers before read (flush-before-read strategy)
+        if($this->bufferEnabled && $this->bufferFlushOnRead){
+            $this->flushAllShardBuffers($dbname, $meta);
         }
 
         // Handle key-based search
@@ -650,6 +1130,11 @@ class noneDB {
             return $main_response;
         }
 
+        // Flush all shard buffers before update
+        if($this->bufferEnabled){
+            $this->flushAllShardBuffers($dbname, $meta);
+        }
+
         // Update each shard atomically
         $totalUpdated = 0;
         foreach($meta['shards'] as $shard){
@@ -714,6 +1199,11 @@ class noneDB {
         $meta = $this->readMeta($dbname);
         if($meta === null){
             return $main_response;
+        }
+
+        // Flush all shard buffers before delete
+        if($this->bufferEnabled){
+            $this->flushAllShardBuffers($dbname, $meta);
         }
 
         // Track deletions per shard for meta update
@@ -999,6 +1489,14 @@ class noneDB {
             return $this->findSharded($dbname, $filters);
         }
 
+        // Flush buffer before read (flush-before-read strategy)
+        if($this->bufferEnabled && $this->bufferFlushOnRead){
+            $bufferPath = $this->getBufferPath($dbname);
+            if($this->hasBuffer($bufferPath)){
+                $this->flushBufferToMain($dbname);
+            }
+        }
+
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
         if(!$this->checkDB($dbname)){
@@ -1124,14 +1622,9 @@ class noneDB {
             return $this->insertSharded($dbname, $data);
         }
 
-        $this->checkDB($dbname);
-        $dbnameHashed=$this->hashDBName($dbname);
-        $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
-
-        // Validate data before atomic operation
+        // Validate data before any operation
+        $validItems = [];
         if($this->isRecordList($data)){
-            // Validate all items first
-            $validItems = [];
             foreach($data as $item){
                 if(!is_array($item)){
                     continue;
@@ -1142,62 +1635,105 @@ class noneDB {
                 }
                 $validItems[] = $item;
             }
-
-            if(empty($validItems)){
-                return array("n"=>0);
-            }
-
-            // Atomic insert - read, modify, write in single locked operation
-            $countData = count($validItems);
-            $result = $this->modifyData($fullDBPath, function($buffer) use ($validItems) {
-                if($buffer === null){
-                    $buffer = array("data" => []);
-                }
-                foreach($validItems as $item){
-                    $buffer['data'][] = $item;
-                }
-                return $buffer;
-            });
-
-            if(!$result['success']){
-                $main_response['error'] = $result['error'] ?? 'Insert failed';
-                return $main_response;
-            }
-
-            // Auto-migrate to sharded format if threshold reached
-            if($this->shardingEnabled && $this->autoMigrate && count($result['data']['data']) >= $this->shardSize){
-                $this->migrateToSharded($dbname);
-            }
-
-            return array("n"=>$countData);
-        }else{
-            // Single record validation
+        } else {
             if($this->hasReservedKeyField($data)){
                 $main_response['error']="You cannot set key name to key";
                 return $main_response;
             }
-
-            // Atomic insert - read, modify, write in single locked operation
-            $result = $this->modifyData($fullDBPath, function($buffer) use ($data) {
-                if($buffer === null){
-                    $buffer = array("data" => []);
-                }
-                $buffer['data'][] = $data;
-                return $buffer;
-            });
-
-            if(!$result['success']){
-                $main_response['error'] = $result['error'] ?? 'Insert failed';
-                return $main_response;
-            }
-
-            // Auto-migrate to sharded format if threshold reached
-            if($this->shardingEnabled && $this->autoMigrate && count($result['data']['data']) >= $this->shardSize){
-                $this->migrateToSharded($dbname);
-            }
-
-            return array("n"=>1);
+            $validItems[] = $data;
         }
+
+        if(empty($validItems)){
+            return array("n"=>0);
+        }
+
+        // Use buffered insert if enabled
+        if($this->bufferEnabled){
+            return $this->insertBuffered($dbname, $validItems);
+        }
+
+        // Non-buffered insert (original atomic method)
+        return $this->insertDirect($dbname, $validItems);
+    }
+
+    /**
+     * Buffered insert - fast append-only to buffer file
+     * @param string $dbname
+     * @param array $validItems Pre-validated items
+     * @return array
+     */
+    private function insertBuffered($dbname, array $validItems){
+        // Ensure database metadata exists (creates .nonedbinfo file)
+        $this->checkDB($dbname);
+
+        // Register shutdown handler for auto-flush
+        $this->registerShutdownHandler();
+
+        $bufferPath = $this->getBufferPath($dbname);
+
+        // Check if buffer needs flushing before insert
+        if($this->shouldFlushBuffer($bufferPath, $dbname)){
+            $this->flushBufferToMain($dbname);
+        }
+
+        // Append to buffer (fast, no full file read)
+        $result = $this->atomicAppendToBuffer($bufferPath, $validItems);
+
+        if(!$result['success']){
+            return array("n" => 0, "error" => $result['error']);
+        }
+
+        // Check again after insert if we crossed threshold
+        if($this->shouldFlushBuffer($bufferPath, $dbname)){
+            $flushResult = $this->flushBufferToMain($dbname);
+
+            // After flush, check if main DB needs sharding
+            if($flushResult['success'] && $this->shardingEnabled && $this->autoMigrate){
+                $this->checkDB($dbname);
+                $dbnameHashed = $this->hashDBName($dbname);
+                $fullDBPath = $this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
+                $rawData = $this->getData($fullDBPath);
+                if($rawData !== false && isset($rawData['data']) && count($rawData['data']) >= $this->shardSize){
+                    $this->migrateToSharded($dbname);
+                }
+            }
+        }
+
+        return array("n" => $result['count']);
+    }
+
+    /**
+     * Direct insert without buffer - uses atomic modify
+     * @param string $dbname
+     * @param array $validItems Pre-validated items
+     * @return array
+     */
+    private function insertDirect($dbname, array $validItems){
+        $this->checkDB($dbname);
+        $dbnameHashed = $this->hashDBName($dbname);
+        $fullDBPath = $this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
+
+        $countData = count($validItems);
+        $result = $this->modifyData($fullDBPath, function($buffer) use ($validItems) {
+            if($buffer === null){
+                $buffer = array("data" => []);
+            }
+            foreach($validItems as $item){
+                $buffer['data'][] = $item;
+            }
+            return $buffer;
+        });
+
+        if(!$result['success']){
+            return array("n" => 0, "error" => $result['error'] ?? 'Insert failed');
+        }
+
+        // Auto-migrate to sharded format if threshold reached
+        if($this->shardingEnabled && $this->autoMigrate && count($result['data']['data']) >= $this->shardSize){
+            $this->migrateToSharded($dbname);
+        }
+
+        return array("n" => $countData);
     }
 
     /**
@@ -1216,6 +1752,14 @@ class noneDB {
         // Check for sharded database first
         if($this->isSharded($dbname)){
             return $this->deleteSharded($dbname, $data);
+        }
+
+        // Flush buffer before delete operation
+        if($this->bufferEnabled){
+            $bufferPath = $this->getBufferPath($dbname);
+            if($this->hasBuffer($bufferPath)){
+                $this->flushBufferToMain($dbname);
+            }
         }
 
         $this->checkDB($dbname);
@@ -1283,6 +1827,14 @@ class noneDB {
         // Check for sharded database first
         if($this->isSharded($dbname)){
             return $this->updateSharded($dbname, $data);
+        }
+
+        // Flush buffer before update operation
+        if($this->bufferEnabled){
+            $bufferPath = $this->getBufferPath($dbname);
+            if($this->hasBuffer($bufferPath)){
+                $this->flushBufferToMain($dbname);
+            }
         }
 
         $this->checkDB($dbname);
@@ -1616,6 +2168,156 @@ class noneDB {
             "shardSize" => $meta['shardSize'],
             "nextKey" => $meta['nextKey']
         );
+    }
+
+    // ==========================================
+    // WRITE BUFFER PUBLIC API
+    // ==========================================
+
+    /**
+     * Manually flush buffer for a database
+     * @param string $dbname
+     * @return array ['success' => bool, 'flushed' => int, 'error' => string|null]
+     */
+    public function flush($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+
+        if($this->isSharded($dbname)){
+            $result = $this->flushAllShardBuffers($dbname);
+            return ['success' => true, 'flushed' => $result['flushed'], 'error' => null];
+        } else {
+            return $this->flushBufferToMain($dbname);
+        }
+    }
+
+    /**
+     * Flush all buffers for all known databases
+     * Called automatically on shutdown if bufferAutoFlushOnShutdown is true
+     * @return array ['databases' => int, 'flushed' => int]
+     */
+    public function flushAllBuffers(){
+        $dbDir = $this->dbDir;
+        $totalFlushed = 0;
+        $dbCount = 0;
+
+        // Find all buffer files
+        $bufferFiles = glob($dbDir . '*.buffer');
+        if($bufferFiles === false){
+            $bufferFiles = [];
+        }
+
+        // Track which databases we've processed
+        $processedDbs = [];
+
+        foreach($bufferFiles as $bufferFile){
+            $basename = basename($bufferFile);
+
+            // Extract database name from buffer file name
+            // Format: hash-dbname.nonedb.buffer or hash-dbname_s0.nonedb.buffer
+            if(preg_match('/^[a-f0-9]+-(.+?)(?:_s\d+)?\.nonedb\.buffer$/', $basename, $matches)){
+                $dbname = $matches[1];
+
+                // Avoid processing same DB multiple times
+                if(isset($processedDbs[$dbname])){
+                    continue;
+                }
+                $processedDbs[$dbname] = true;
+
+                // Check if sharded or non-sharded
+                if($this->isSharded($dbname)){
+                    $result = $this->flushAllShardBuffers($dbname);
+                    $totalFlushed += $result['flushed'];
+                } else {
+                    $result = $this->flushBufferToMain($dbname);
+                    if($result['success']){
+                        $totalFlushed += $result['flushed'];
+                    }
+                }
+                $dbCount++;
+            }
+        }
+
+        return ['databases' => $dbCount, 'flushed' => $totalFlushed];
+    }
+
+    /**
+     * Get buffer information for a database
+     * @param string $dbname
+     * @return array Buffer statistics
+     */
+    public function getBufferInfo($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+
+        $info = [
+            'enabled' => $this->bufferEnabled,
+            'sizeLimit' => $this->bufferSizeLimit,
+            'countLimit' => $this->bufferCountLimit,
+            'flushInterval' => $this->bufferFlushInterval,
+            'buffers' => []
+        ];
+
+        if($this->isSharded($dbname)){
+            $meta = $this->readMeta($dbname);
+            if($meta !== null && isset($meta['shards'])){
+                foreach($meta['shards'] as $shard){
+                    $bufferPath = $this->getShardBufferPath($dbname, $shard['id']);
+                    $info['buffers']['shard_' . $shard['id']] = [
+                        'exists' => $this->hasBuffer($bufferPath),
+                        'size' => $this->getBufferSize($bufferPath),
+                        'records' => $this->hasBuffer($bufferPath) ? $this->getBufferRecordCount($bufferPath) : 0
+                    ];
+                }
+            }
+        } else {
+            $bufferPath = $this->getBufferPath($dbname);
+            $info['buffers']['main'] = [
+                'exists' => $this->hasBuffer($bufferPath),
+                'size' => $this->getBufferSize($bufferPath),
+                'records' => $this->hasBuffer($bufferPath) ? $this->getBufferRecordCount($bufferPath) : 0
+            ];
+        }
+
+        return $info;
+    }
+
+    /**
+     * Enable or disable write buffering
+     * @param bool $enable
+     */
+    public function enableBuffering($enable = true){
+        $this->bufferEnabled = (bool)$enable;
+    }
+
+    /**
+     * Check if buffering is enabled
+     * @return bool
+     */
+    public function isBufferingEnabled(){
+        return $this->bufferEnabled;
+    }
+
+    /**
+     * Set buffer size limit (in bytes)
+     * @param int $bytes
+     */
+    public function setBufferSizeLimit($bytes){
+        $this->bufferSizeLimit = max(1024, (int)$bytes); // Minimum 1KB
+    }
+
+    /**
+     * Set buffer flush interval (in seconds)
+     * @param int $seconds 0 to disable time-based flush
+     */
+    public function setBufferFlushInterval($seconds){
+        $this->bufferFlushInterval = max(0, (int)$seconds);
+    }
+
+    /**
+     * Set buffer count limit
+     * @param int $count
+     */
+    public function setBufferCountLimit($count){
+        $this->bufferCountLimit = max(10, (int)$count); // Minimum 10 records
     }
 
     /**
