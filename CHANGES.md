@@ -143,7 +143,6 @@ Convenience aliases:
 
 #### Documentation
 - `README.md` - All new methods documented
-- `CLAUDE.md` - Developer guide updated
 - Method Chaining section organized into 5 categories
 - 15+ new code examples added
 
