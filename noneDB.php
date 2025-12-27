@@ -14,10 +14,15 @@
 ini_set('memory_limit', '-1');
 
 class noneDB {
-    
-    private $dbDir=__DIR__."/"."db/"; // please change this path and don't fotget end with / 
+
+    private $dbDir=__DIR__."/"."db/"; // please change this path and don't fotget end with /
     private $secretKey="nonedb_123"; // please change this secret key! and don't share anyone or anywhere!!
     private $autoCreateDB=true; // if you want to auto create your db true or false
+
+    // Sharding configuration
+    private $shardingEnabled=true;   // Enable/disable auto-sharding
+    private $shardSize=10000;         // Max records per shard
+    private $autoMigrate=true;        // Auto-migrate legacy DBs to sharded format
 
     /**
      * hash to db name for security
@@ -26,6 +31,490 @@ class noneDB {
         return hash_pbkdf2("sha256", $dbname, $this->secretKey, 1000, 20);
     }
 
+    // ==========================================
+    // SHARDING HELPER METHODS
+    // ==========================================
+
+    /**
+     * Get the file path for a specific shard
+     * @param string $dbname
+     * @param int $shardId
+     * @return string
+     */
+    private function getShardPath($dbname, $shardId){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $hash = $this->hashDBName($dbname);
+        return $this->dbDir . $hash . "-" . $dbname . "_s" . $shardId . ".nonedb";
+    }
+
+    /**
+     * Get the meta file path for a database
+     * @param string $dbname
+     * @return string
+     */
+    private function getMetaPath($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $hash = $this->hashDBName($dbname);
+        return $this->dbDir . $hash . "-" . $dbname . ".nonedb.meta";
+    }
+
+    /**
+     * Check if a database is sharded
+     * @param string $dbname
+     * @return bool
+     */
+    private function isSharded($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        return file_exists($this->getMetaPath($dbname));
+    }
+
+    /**
+     * Read shard metadata
+     * @param string $dbname
+     * @return array|null
+     */
+    private function readMeta($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $path = $this->getMetaPath($dbname);
+        if(!file_exists($path)) return null;
+        $content = file_get_contents($path);
+        return json_decode($content, true);
+    }
+
+    /**
+     * Write shard metadata
+     * @param string $dbname
+     * @param array $meta
+     */
+    private function writeMeta($dbname, $meta){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $path = $this->getMetaPath($dbname);
+        file_put_contents($path, json_encode($meta, JSON_PRETTY_PRINT), LOCK_EX);
+    }
+
+    /**
+     * Get data from a specific shard
+     * @param string $dbname
+     * @param int $shardId
+     * @return array
+     */
+    private function getShardData($dbname, $shardId){
+        $path = $this->getShardPath($dbname, $shardId);
+        if(!file_exists($path)) return array("data" => []);
+        $content = file_get_contents($path);
+        return json_decode($content, true);
+    }
+
+    /**
+     * Write data to a specific shard
+     * @param string $dbname
+     * @param int $shardId
+     * @param array $data
+     */
+    private function writeShardData($dbname, $shardId, $data){
+        $path = $this->getShardPath($dbname, $shardId);
+        file_put_contents($path, json_encode($data), LOCK_EX);
+    }
+
+    /**
+     * Calculate shard ID from a global key
+     * @param int $key
+     * @return int
+     */
+    private function getShardIdForKey($key){
+        return (int) floor($key / $this->shardSize);
+    }
+
+    /**
+     * Calculate local key within a shard
+     * @param int $globalKey
+     * @return int
+     */
+    private function getLocalKey($globalKey){
+        return $globalKey % $this->shardSize;
+    }
+
+    /**
+     * Migrate a legacy (non-sharded) database to sharded format
+     * @param string $dbname
+     * @return bool
+     */
+    private function migrateToSharded($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $hash = $this->hashDBName($dbname);
+        $legacyPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+
+        if(!file_exists($legacyPath)){
+            return false;
+        }
+
+        // Read all data from legacy file
+        $legacyData = $this->getData($legacyPath);
+        if($legacyData === false || !isset($legacyData['data'])){
+            return false;
+        }
+
+        $allRecords = $legacyData['data'];
+        $totalRecords = 0;
+        $deletedCount = 0;
+
+        // Count actual records and deleted entries
+        foreach($allRecords as $record){
+            if($record === null){
+                $deletedCount++;
+            } else {
+                $totalRecords++;
+            }
+        }
+
+        // Calculate number of shards needed
+        $totalEntries = count($allRecords);
+        $numShards = (int) ceil($totalEntries / $this->shardSize);
+        if($numShards === 0) $numShards = 1;
+
+        // Create shards
+        $meta = array(
+            "version" => 1,
+            "shardSize" => $this->shardSize,
+            "totalRecords" => $totalRecords,
+            "deletedCount" => $deletedCount,
+            "nextKey" => $totalEntries,
+            "shards" => []
+        );
+
+        for($shardId = 0; $shardId < $numShards; $shardId++){
+            $start = $shardId * $this->shardSize;
+            $end = min($start + $this->shardSize, $totalEntries);
+            $shardRecords = array_slice($allRecords, $start, $end - $start);
+
+            // Count records in this shard
+            $shardCount = 0;
+            $shardDeleted = 0;
+            foreach($shardRecords as $record){
+                if($record === null){
+                    $shardDeleted++;
+                } else {
+                    $shardCount++;
+                }
+            }
+
+            $meta['shards'][] = array(
+                "id" => $shardId,
+                "file" => "_s" . $shardId,
+                "count" => $shardCount,
+                "deleted" => $shardDeleted
+            );
+
+            // Write shard file
+            $this->writeShardData($dbname, $shardId, array("data" => $shardRecords));
+        }
+
+        // Write meta file
+        $this->writeMeta($dbname, $meta);
+
+        // Backup and remove legacy file
+        $backupPath = $legacyPath . ".backup";
+        rename($legacyPath, $backupPath);
+
+        return true;
+    }
+
+    /**
+     * Insert data into sharded database
+     * @param string $dbname
+     * @param array $data
+     * @return array
+     */
+    private function insertSharded($dbname, $data){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $main_response = array("n" => 0);
+
+        $meta = $this->readMeta($dbname);
+        if($meta === null){
+            return $main_response;
+        }
+
+        // Get the last shard
+        $lastShardIdx = count($meta['shards']) - 1;
+        $lastShard = $meta['shards'][$lastShardIdx];
+        $shardId = $lastShard['id'];
+
+        // Calculate current count in last shard
+        $currentShardCount = $lastShard['count'] + $lastShard['deleted'];
+
+        // Check if we need a new shard
+        if($currentShardCount >= $this->shardSize){
+            $shardId++;
+            $meta['shards'][] = array(
+                "id" => $shardId,
+                "file" => "_s" . $shardId,
+                "count" => 0,
+                "deleted" => 0
+            );
+            $lastShardIdx = count($meta['shards']) - 1;
+            $currentShardCount = 0;
+        }
+
+        // Get shard data
+        $shardData = $this->getShardData($dbname, $shardId);
+        $insertedCount = 0;
+
+        // Check if data is a list of records
+        if($this->isRecordList($data)){
+            foreach($data as $item){
+                if(!is_array($item)) continue;
+                if($this->hasReservedKeyField($item)){
+                    $main_response['error'] = "You cannot set key name to key";
+                    return $main_response;
+                }
+
+                // Check if current shard is full, create new one
+                if($currentShardCount >= $this->shardSize){
+                    // Write current shard
+                    $this->writeShardData($dbname, $shardId, $shardData);
+                    $meta['shards'][$lastShardIdx]['count'] += $insertedCount;
+
+                    // Create new shard
+                    $shardId++;
+                    $meta['shards'][] = array(
+                        "id" => $shardId,
+                        "file" => "_s" . $shardId,
+                        "count" => 0,
+                        "deleted" => 0
+                    );
+                    $lastShardIdx = count($meta['shards']) - 1;
+                    $shardData = array("data" => []);
+                    $currentShardCount = 0;
+                    $insertedCount = 0;
+                }
+
+                $shardData['data'][] = $item;
+                $currentShardCount++;
+                $insertedCount++;
+            }
+        } else {
+            // Single record
+            if($this->hasReservedKeyField($data)){
+                $main_response['error'] = "You cannot set key name to key";
+                return $main_response;
+            }
+            $shardData['data'][] = $data;
+            $insertedCount = 1;
+        }
+
+        // Write final shard data
+        $this->writeShardData($dbname, $shardId, $shardData);
+
+        // Update meta
+        $meta['shards'][$lastShardIdx]['count'] += $insertedCount;
+        $meta['totalRecords'] += $insertedCount;
+        $meta['nextKey'] += $insertedCount;
+        $this->writeMeta($dbname, $meta);
+
+        return array("n" => ($this->isRecordList($data) ? $insertedCount : 1));
+    }
+
+    /**
+     * Find records in sharded database
+     * @param string $dbname
+     * @param mixed $filters
+     * @return array|false
+     */
+    private function findSharded($dbname, $filters){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $meta = $this->readMeta($dbname);
+        if($meta === null){
+            return false;
+        }
+
+        // Handle key-based search
+        if(is_array($filters) && count($filters) > 0){
+            $filterKeys = array_keys($filters);
+            if($filterKeys[0] === "key"){
+                $result = [];
+                $keys = is_array($filters['key']) ? $filters['key'] : array($filters['key']);
+
+                foreach($keys as $globalKey){
+                    $globalKey = (int)$globalKey;
+                    $shardId = $this->getShardIdForKey($globalKey);
+                    $localKey = $this->getLocalKey($globalKey);
+
+                    // Check if shard exists
+                    $shardExists = false;
+                    foreach($meta['shards'] as $shard){
+                        if($shard['id'] === $shardId){
+                            $shardExists = true;
+                            break;
+                        }
+                    }
+
+                    if(!$shardExists) continue;
+
+                    $shardData = $this->getShardData($dbname, $shardId);
+                    if(isset($shardData['data'][$localKey]) && $shardData['data'][$localKey] !== null){
+                        $record = $shardData['data'][$localKey];
+                        $record['key'] = $globalKey;
+                        $result[] = $record;
+                    }
+                }
+                return $result;
+            }
+        }
+
+        // For all other searches, scan all shards
+        $result = [];
+        foreach($meta['shards'] as $shard){
+            $shardData = $this->getShardData($dbname, $shard['id']);
+            $baseKey = $shard['id'] * $this->shardSize;
+
+            foreach($shardData['data'] as $localKey => $record){
+                if($record === null) continue;
+
+                $globalKey = $baseKey + $localKey;
+                $record['key'] = $globalKey;
+
+                // Return all if no filter
+                if(is_int($filters) || (is_array($filters) && count($filters) === 0)){
+                    $result[] = $record;
+                    continue;
+                }
+
+                // Apply filter
+                $match = true;
+                foreach($filters as $field => $value){
+                    if(!array_key_exists($field, $record) || $record[$field] !== $value){
+                        $match = false;
+                        break;
+                    }
+                }
+                if($match){
+                    $result[] = $record;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Update records in sharded database
+     * @param string $dbname
+     * @param array $data
+     * @return array
+     */
+    private function updateSharded($dbname, $data){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $main_response = array("n" => 0);
+
+        // Find records to update
+        $find = $this->findSharded($dbname, $data[0]);
+        if($find === false || count($find) === 0){
+            return $main_response;
+        }
+
+        $meta = $this->readMeta($dbname);
+        if($meta === null){
+            return $main_response;
+        }
+
+        // Group updates by shard
+        $shardUpdates = [];
+        foreach($find as $record){
+            $globalKey = $record['key'];
+            $shardId = $this->getShardIdForKey($globalKey);
+            $localKey = $this->getLocalKey($globalKey);
+
+            if(!isset($shardUpdates[$shardId])){
+                $shardUpdates[$shardId] = [];
+            }
+            $shardUpdates[$shardId][$localKey] = $data[1]['set'];
+        }
+
+        // Apply updates to each shard
+        $updatedCount = 0;
+        foreach($shardUpdates as $shardId => $updates){
+            $shardData = $this->getShardData($dbname, $shardId);
+
+            foreach($updates as $localKey => $setValues){
+                if(isset($shardData['data'][$localKey]) && $shardData['data'][$localKey] !== null){
+                    foreach($setValues as $field => $value){
+                        $shardData['data'][$localKey][$field] = $value;
+                    }
+                    $updatedCount++;
+                }
+            }
+
+            $this->writeShardData($dbname, $shardId, $shardData);
+        }
+
+        return array("n" => $updatedCount);
+    }
+
+    /**
+     * Delete records from sharded database
+     * @param string $dbname
+     * @param array $data
+     * @return array
+     */
+    private function deleteSharded($dbname, $data){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $main_response = array("n" => 0);
+
+        // Find records to delete
+        $find = $this->findSharded($dbname, $data);
+        if($find === false || count($find) === 0){
+            return $main_response;
+        }
+
+        $meta = $this->readMeta($dbname);
+        if($meta === null){
+            return $main_response;
+        }
+
+        // Group deletes by shard
+        $shardDeletes = [];
+        foreach($find as $record){
+            $globalKey = $record['key'];
+            $shardId = $this->getShardIdForKey($globalKey);
+            $localKey = $this->getLocalKey($globalKey);
+
+            if(!isset($shardDeletes[$shardId])){
+                $shardDeletes[$shardId] = [];
+            }
+            $shardDeletes[$shardId][] = $localKey;
+        }
+
+        // Apply deletes to each shard
+        $deletedCount = 0;
+        foreach($shardDeletes as $shardId => $localKeys){
+            $shardData = $this->getShardData($dbname, $shardId);
+
+            foreach($localKeys as $localKey){
+                if(isset($shardData['data'][$localKey]) && $shardData['data'][$localKey] !== null){
+                    $shardData['data'][$localKey] = null;
+                    $deletedCount++;
+
+                    // Update shard meta
+                    foreach($meta['shards'] as &$shard){
+                        if($shard['id'] === $shardId){
+                            $shard['count']--;
+                            $shard['deleted']++;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            $this->writeShardData($dbname, $shardId, $shardData);
+        }
+
+        // Update meta
+        $meta['totalRecords'] -= $deletedCount;
+        $meta['deletedCount'] += $deletedCount;
+        $this->writeMeta($dbname, $meta);
+
+        return array("n" => $deletedCount);
+    }
 
     /**
      * check db
@@ -248,6 +737,12 @@ class noneDB {
      */
     public function find($dbname, $filters=0){
         $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+
+        // Check for sharded database first
+        if($this->isSharded($dbname)){
+            return $this->findSharded($dbname, $filters);
+        }
+
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
         if(!$this->checkDB($dbname)){
@@ -362,14 +857,20 @@ class noneDB {
     public function insert($dbname, $data){
         $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
         $main_response=array("n"=>0);
-        $this->checkDB($dbname);
-        $dbnameHashed=$this->hashDBName($dbname);
-        $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
         if(!is_array($data)){
             $main_response['error']="insert data must be array";
             return $main_response;
         }
+
+        // Check for sharded database first
+        if($this->isSharded($dbname)){
+            return $this->insertSharded($dbname, $data);
+        }
+
+        $this->checkDB($dbname);
+        $dbnameHashed=$this->hashDBName($dbname);
+        $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
         $buffer = $this->getData($fullDBPath);
         if($buffer === false){
@@ -392,6 +893,12 @@ class noneDB {
                 $countData++;
             }
             $this->insertData($fullDBPath, $buffer);
+
+            // Auto-migrate to sharded format if threshold reached
+            if($this->shardingEnabled && $this->autoMigrate && count($buffer['data']) >= $this->shardSize){
+                $this->migrateToSharded($dbname);
+            }
+
             return array("n"=>$countData);
         }else{
             // Single record to insert
@@ -401,6 +908,12 @@ class noneDB {
             }
             $buffer['data'][]=$data;
             $this->insertData($fullDBPath, $buffer);
+
+            // Auto-migrate to sharded format if threshold reached
+            if($this->shardingEnabled && $this->autoMigrate && count($buffer['data']) >= $this->shardSize){
+                $this->migrateToSharded($dbname);
+            }
+
             return array("n"=>1);
         }
     }
@@ -417,6 +930,12 @@ class noneDB {
             $main_response['error']="Please check your delete paramters";
             return $main_response;
         }
+
+        // Check for sharded database first
+        if($this->isSharded($dbname)){
+            return $this->deleteSharded($dbname, $data);
+        }
+
         $this->checkDB($dbname);
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
@@ -451,6 +970,12 @@ class noneDB {
             $main_response['error']="Please check your update paramters";
             return $main_response;
         }
+
+        // Check for sharded database first
+        if($this->isSharded($dbname)){
+            return $this->updateSharded($dbname, $data);
+        }
+
         $this->checkDB($dbname);
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
@@ -701,6 +1226,208 @@ class noneDB {
             }
         }
         return $filtered;
+    }
+
+    // ==========================================
+    // SHARDING PUBLIC METHODS
+    // ==========================================
+
+    /**
+     * Get sharding information for a database
+     * @param string $dbname
+     * @return array|false
+     */
+    public function getShardInfo($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+
+        if(!$this->isSharded($dbname)){
+            // Check if legacy database exists
+            $hash = $this->hashDBName($dbname);
+            $legacyPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+            if(file_exists($legacyPath)){
+                $data = $this->getData($legacyPath);
+                if($data !== false && isset($data['data'])){
+                    $count = 0;
+                    foreach($data['data'] as $record){
+                        if($record !== null) $count++;
+                    }
+                    return array(
+                        "sharded" => false,
+                        "shards" => 0,
+                        "totalRecords" => $count,
+                        "shardSize" => $this->shardSize
+                    );
+                }
+            }
+            return false;
+        }
+
+        $meta = $this->readMeta($dbname);
+        if($meta === null){
+            return false;
+        }
+
+        return array(
+            "sharded" => true,
+            "shards" => count($meta['shards']),
+            "totalRecords" => $meta['totalRecords'],
+            "deletedCount" => $meta['deletedCount'],
+            "shardSize" => $meta['shardSize'],
+            "nextKey" => $meta['nextKey']
+        );
+    }
+
+    /**
+     * Compact a database by removing null entries
+     * Works for both sharded and non-sharded databases
+     * @param string $dbname
+     * @return array
+     */
+    public function compact($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $result = array("success" => false, "freedSlots" => 0);
+
+        // Handle non-sharded database
+        if(!$this->isSharded($dbname)){
+            $hash = $this->hashDBName($dbname);
+            $fullDBPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+
+            if(!file_exists($fullDBPath)){
+                $result['status'] = 'database_not_found';
+                return $result;
+            }
+
+            $rawData = $this->getData($fullDBPath);
+            if($rawData === false || !isset($rawData['data'])){
+                $result['status'] = 'read_error';
+                return $result;
+            }
+
+            $allRecords = [];
+            $freedSlots = 0;
+
+            foreach($rawData['data'] as $record){
+                if($record !== null){
+                    $allRecords[] = $record;
+                } else {
+                    $freedSlots++;
+                }
+            }
+
+            // Write compacted data back
+            $this->insertData($fullDBPath, array("data" => $allRecords));
+
+            $result['success'] = true;
+            $result['freedSlots'] = $freedSlots;
+            $result['totalRecords'] = count($allRecords);
+            $result['sharded'] = false;
+            return $result;
+        }
+
+        // Handle sharded database
+        $meta = $this->readMeta($dbname);
+        if($meta === null){
+            $result['status'] = 'meta_read_error';
+            return $result;
+        }
+
+        $allRecords = [];
+        $freedSlots = 0;
+
+        // Collect all non-null records from all shards
+        foreach($meta['shards'] as $shard){
+            $shardData = $this->getShardData($dbname, $shard['id']);
+            foreach($shardData['data'] as $record){
+                if($record !== null){
+                    $allRecords[] = $record;
+                } else {
+                    $freedSlots++;
+                }
+            }
+            // Delete old shard file
+            $shardPath = $this->getShardPath($dbname, $shard['id']);
+            if(file_exists($shardPath)){
+                unlink($shardPath);
+            }
+        }
+
+        // Recalculate and rebuild shards
+        $totalRecords = count($allRecords);
+        $numShards = (int) ceil($totalRecords / $this->shardSize);
+        if($numShards === 0) $numShards = 1;
+
+        $newMeta = array(
+            "version" => 1,
+            "shardSize" => $this->shardSize,
+            "totalRecords" => $totalRecords,
+            "deletedCount" => 0,
+            "nextKey" => $totalRecords,
+            "shards" => []
+        );
+
+        for($shardId = 0; $shardId < $numShards; $shardId++){
+            $start = $shardId * $this->shardSize;
+            $shardRecords = array_slice($allRecords, $start, $this->shardSize);
+
+            $newMeta['shards'][] = array(
+                "id" => $shardId,
+                "file" => "_s" . $shardId,
+                "count" => count($shardRecords),
+                "deleted" => 0
+            );
+
+            $this->writeShardData($dbname, $shardId, array("data" => $shardRecords));
+        }
+
+        $this->writeMeta($dbname, $newMeta);
+
+        $result['success'] = true;
+        $result['freedSlots'] = $freedSlots;
+        $result['newShardCount'] = $numShards;
+        $result['sharded'] = true;
+        return $result;
+    }
+
+    /**
+     * Manually trigger migration to sharded format
+     * @param string $dbname
+     * @return array ["success" => bool, "status" => string]
+     */
+    public function migrate($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+
+        if($this->isSharded($dbname)){
+            return array("success" => true, "status" => "already_sharded");
+        }
+
+        // Check if legacy database exists
+        $hash = $this->hashDBName($dbname);
+        $legacyPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+        if(!file_exists($legacyPath)){
+            return array("success" => false, "status" => "database_not_found");
+        }
+
+        $result = $this->migrateToSharded($dbname);
+        if($result){
+            return array("success" => true, "status" => "migrated");
+        }
+        return array("success" => false, "status" => "migration_failed");
+    }
+
+    /**
+     * Check if sharding is enabled
+     * @return bool
+     */
+    public function isShardingEnabled(){
+        return $this->shardingEnabled;
+    }
+
+    /**
+     * Get current shard size setting
+     * @return int
+     */
+    public function getShardSize(){
+        return $this->shardSize;
     }
 }
 ?>

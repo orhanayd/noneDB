@@ -15,6 +15,7 @@
 - Auto-create databases
 - Secure hashed file names
 - File locking for concurrent access
+- **Auto-sharding** for large datasets (100K+ records)
 
 ## Requirements
 
@@ -46,6 +47,11 @@ Edit `noneDB.php`:
 private $dbDir = __DIR__."/db/";      // Database directory path
 private $secretKey = "nonedb_123";     // Secret key for hashing - CHANGE THIS!
 private $autoCreateDB = true;          // Auto-create databases on first use
+
+// Sharding configuration
+private $shardingEnabled = true;       // Enable auto-sharding for large datasets
+private $shardSize = 10000;            // Records per shard (default: 10,000)
+private $autoMigrate = true;           // Auto-migrate when threshold reached
 ```
 
 ### Security Warnings
@@ -373,6 +379,138 @@ if ($db->exists("users", ["email" => "john@test.com"])) {
 
 ---
 
+## Auto-Sharding
+
+noneDB automatically partitions large databases into smaller shards for better performance. When a database reaches the threshold (default: 10,000 records), it's automatically split into multiple shard files.
+
+### How It Works
+
+```
+Without Sharding (500K records):
+├── hash-users.nonedb          # 50 MB, entire file read for every operation
+
+With Sharding (500K records, 50 shards):
+├── hash-users.nonedb.meta     # Shard metadata
+├── hash-users_s0.nonedb       # Shard 0: records 0-9,999
+├── hash-users_s1.nonedb       # Shard 1: records 10,000-19,999
+├── ...
+└── hash-users_s49.nonedb      # Shard 49: records 490,000-499,999
+```
+
+### Performance Comparison (500K Records)
+
+| Operation | Without Sharding | With Sharding | Improvement |
+|-----------|------------------|---------------|-------------|
+| **find(key)** | 772 ms | **16 ms** | **~50x faster** |
+| RAM per key lookup | 1.1 GB | **~1 MB** | **~1000x less** |
+| find(all) | 1.2 s | 1.18 s | Similar |
+| insert | 706 ms | 1.53 s | Slightly slower |
+
+> **Key Benefit:** Single-record operations (login, profile view, etc.) only read one shard instead of the entire database.
+
+### Sharding API
+
+#### getShardInfo($dbname)
+
+Get sharding information for a database.
+
+```php
+$info = $db->getShardInfo("users");
+// Returns:
+// [
+//     "sharded" => true,
+//     "shards" => 50,
+//     "totalRecords" => 500000,
+//     "deletedCount" => 150,
+//     "shardSize" => 10000,
+//     "nextKey" => 500150
+// ]
+
+// For non-sharded database:
+// ["sharded" => false, "shards" => 0, "totalRecords" => 5000, "shardSize" => 10000]
+```
+
+#### compact($dbname)
+
+Remove deleted records and reclaim space. Works for both sharded and non-sharded databases.
+
+```php
+$result = $db->compact("users");
+
+// Sharded database:
+// [
+//     "success" => true,
+//     "freedSlots" => 1500,
+//     "newShardCount" => 48,
+//     "sharded" => true
+// ]
+
+// Non-sharded database:
+// [
+//     "success" => true,
+//     "freedSlots" => 50,
+//     "totalRecords" => 950,
+//     "sharded" => false
+// ]
+
+// Error cases:
+// ["success" => false, "status" => "database_not_found"]
+// ["success" => false, "status" => "read_error"]
+```
+
+#### migrate($dbname)
+
+Manually trigger migration to sharded format (normally happens automatically).
+
+```php
+$result = $db->migrate("users");
+// Returns:
+// ["success" => true, "status" => "migrated"]           - Successfully migrated
+// ["success" => true, "status" => "already_sharded"]    - Already sharded, no action taken
+// ["success" => false, "status" => "database_not_found"] - Database doesn't exist
+// ["success" => false, "status" => "migration_failed"]   - Migration error
+```
+
+#### isShardingEnabled() / getShardSize()
+
+Check current sharding configuration.
+
+```php
+$db->isShardingEnabled();  // Returns: true
+$db->getShardSize();       // Returns: 10000
+```
+
+### Configuration Options
+
+```php
+// Disable sharding entirely
+private $shardingEnabled = false;
+
+// Change shard size (records per shard)
+private $shardSize = 5000;  // Smaller shards = faster single-record ops, more files
+
+// Disable auto-migration (manual control)
+private $autoMigrate = false;
+```
+
+### When to Use Sharding
+
+| Dataset Size | Recommendation |
+|--------------|----------------|
+| < 10K records | Sharding unnecessary |
+| 10K - 100K | Sharding beneficial for key-based lookups |
+| 100K - 500K | **Sharding recommended** |
+| > 500K | Consider a dedicated database server |
+
+### Sharding Limitations
+
+- Filter-based queries still scan all shards
+- Slightly slower for bulk inserts (writes to multiple files)
+- More files to manage in the database directory
+- Backup requires copying all shard files
+
+---
+
 ## Error Handling
 
 Operations return error information when they fail:
@@ -453,17 +591,17 @@ Tested on PHP 8.2, macOS (Apple Silicon)
 - Database names are sanitized to `[A-Za-z0-9' -]` only
 
 ### Performance
-- Optimized for datasets up to 10,000 records
-- Usable up to 100,000 records with acceptable latency
-- Not recommended for 500K+ records (high memory, slow operations)
-- Each operation reads/writes entire file
-- No indexing support
+- Optimized for datasets up to 10,000 records per shard
+- **With sharding:** Usable up to 500,000 records with good performance for key-based lookups
+- Without sharding: Not recommended for 100K+ records
+- Filter-based queries scan all shards (or entire file)
+- No indexing support (use key-based lookups for best performance)
 
 ### Data Integrity
 - No transactions support
 - No foreign key constraints
 - Concurrent writes use file locking but race conditions possible
-- Deleted records leave `null` entries (file doesn't shrink)
+- Deleted records leave `null` entries (use `compact()` to reclaim space)
 
 ### Character Encoding
 - Database names: Only `A-Z`, `a-z`, `0-9`, space, hyphen, apostrophe allowed
@@ -489,6 +627,7 @@ $db->insert("test'db", ["data" => "test"]);  // OK - apostrophe allowed
 
 ## File Structure
 
+### Standard Database (< 10K records)
 ```
 project/
 ├── noneDB.php
@@ -499,6 +638,18 @@ project/
     └── d4e5f6...-posts.nonedbinfo
 ```
 
+### Sharded Database (10K+ records)
+```
+project/
+├── noneDB.php
+└── db/
+    ├── a1b2c3...-users.nonedb.meta  # Shard metadata
+    ├── a1b2c3...-users_s0.nonedb    # Shard 0
+    ├── a1b2c3...-users_s1.nonedb    # Shard 1
+    ├── a1b2c3...-users_s2.nonedb    # Shard 2
+    └── a1b2c3...-users.nonedbinfo   # Creation time
+```
+
 Database file format:
 ```json
 {
@@ -506,6 +657,22 @@ Database file format:
         {"name": "John", "email": "john@example.com"},
         {"name": "Jane", "email": "jane@example.com"},
         null
+    ]
+}
+```
+
+Shard metadata format (`.meta` file):
+```json
+{
+    "version": 1,
+    "shardSize": 10000,
+    "totalRecords": 25000,
+    "deletedCount": 150,
+    "nextKey": 25150,
+    "shards": [
+        {"id": 0, "file": "_s0", "count": 9850, "deleted": 150},
+        {"id": 1, "file": "_s1", "count": 10000, "deleted": 0},
+        {"id": 2, "file": "_s2", "count": 5000, "deleted": 0}
     ]
 }
 ```
@@ -548,6 +715,7 @@ vendor/bin/phpunit --testdox
 - [x] `first()` / `last()` - First/Last record
 - [x] `exists()` - Check if records exist
 - [x] `between()` - Range queries
+- [x] **Auto-sharding** - Horizontal partitioning for large datasets
 
 ---
 
