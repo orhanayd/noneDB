@@ -390,6 +390,60 @@ $result = $db->update("users", "invalid");
 
 ---
 
+## Performance Benchmarks
+
+Tested on PHP 8.2, macOS (Apple Silicon)
+
+**Test data structure (6 fields per record):**
+```php
+[
+    "name" => "User123",
+    "email" => "user123@test.com",
+    "age" => 25,
+    "salary" => 8500,
+    "city" => "Istanbul",
+    "active" => true
+]
+```
+
+### Write Operations
+| Operation | 100 | 1K | 10K | 50K | 100K | 500K |
+|-----------|-----|-----|------|------|-------|-------|
+| insert() | 10 ms | 10 ms | 19 ms | 70 ms | 139 ms | 706 ms |
+| update() | 12 ms | 15 ms | 48 ms | 203 ms | 392 ms | 1.9 s |
+| delete() | 12 ms | 16 ms | 48 ms | 199 ms | 401 ms | 1.9 s |
+
+### Read Operations
+| Operation | 100 | 1K | 10K | 50K | 100K | 500K |
+|-----------|-----|-----|------|------|-------|-------|
+| find(all) | 6 ms | 7 ms | 27 ms | 115 ms | 226 ms | 1.2 s |
+| find(key) | 6 ms | 7 ms | 21 ms | 80 ms | 159 ms | 772 ms |
+| find(filter) | 6 ms | 8 ms | 24 ms | 104 ms | 192 ms | 971 ms |
+
+### Query & Aggregation
+| Operation | 100 | 1K | 10K | 50K | 100K | 500K |
+|-----------|-----|-----|------|------|-------|-------|
+| count() | 6 ms | 8 ms | 24 ms | 100 ms | 228 ms | 1.2 s |
+| distinct() | 6 ms | 8 ms | 26 ms | 111 ms | 228 ms | 1.4 s |
+| sum() | 6 ms | 8 ms | 26 ms | 112 ms | 222 ms | 1.5 s |
+| like() | 6 ms | 8 ms | 27 ms | 113 ms | 229 ms | 1.4 s |
+| between() | 6 ms | 8 ms | 26 ms | 115 ms | 216 ms | 1.4 s |
+| sort() | <1 ms | 4 ms | 51 ms | 331 ms | 719 ms | 4.6 s |
+| first() | 6 ms | 8 ms | 25 ms | 123 ms | 237 ms | 1.2 s |
+| exists() | 6 ms | 8 ms | 26 ms | 103 ms | 204 ms | 991 ms |
+
+### Storage
+| Records | File Size | Peak Memory |
+|---------|-----------|-------------|
+| 100 | 10 KB | 0.7 MB |
+| 1,000 | 98 KB | 2.7 MB |
+| 10,000 | 1 MB | 23 MB |
+| 50,000 | 5 MB | 110 MB |
+| 100,000 | 10 MB | 220 MB |
+| 500,000 | 50 MB | 1.1 GB |
+
+---
+
 ## Warnings & Limitations
 
 ### Security
@@ -399,8 +453,9 @@ $result = $db->update("users", "invalid");
 - Database names are sanitized to `[A-Za-z0-9' -]` only
 
 ### Performance
-- Not suitable for large datasets (>10,000 records)
-- Not suitable for high-traffic applications
+- Optimized for datasets up to 10,000 records
+- Usable up to 100,000 records with acceptable latency
+- Not recommended for 500K+ records (high memory, slow operations)
 - Each operation reads/writes entire file
 - No indexing support
 
