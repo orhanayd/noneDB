@@ -1855,6 +1855,7 @@ class noneDBQuery {
         // 9. Apply search filters
         foreach ($this->searchFilters as $search) {
             $term = strtolower($search['term']);
+            if ($term === '') continue; // Skip empty search terms (PHP 7.4 strpos compatibility)
             $fields = $search['fields'];
             $results = array_filter($results, function($record) use ($term, $fields) {
                 $searchFields = $fields;
