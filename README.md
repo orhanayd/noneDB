@@ -270,6 +270,109 @@ $first10 = $db->limit($all, 10);
 
 ---
 
+### sort($array, $field, $order)
+
+Sort results by field.
+
+```php
+$users = $db->find("users", 0);
+$sorted = $db->sort($users, "age", "asc");   // Ascending
+$sorted = $db->sort($users, "name", "desc"); // Descending
+```
+
+---
+
+### count($dbname, $filter)
+
+Count records matching filter.
+
+```php
+$total = $db->count("users", 0);                    // All records
+$active = $db->count("users", ["active" => true]);  // Filtered count
+```
+
+---
+
+### distinct($dbname, $field)
+
+Get unique values for a field.
+
+```php
+$cities = $db->distinct("users", "city");
+// Returns: ["Istanbul", "Ankara", "Izmir"]
+```
+
+---
+
+### like($dbname, $field, $pattern)
+
+Pattern matching search.
+
+```php
+$db->like("users", "email", "gmail");    // Contains "gmail"
+$db->like("users", "name", "^John");     // Starts with "John"
+$db->like("users", "name", "son$");      // Ends with "son"
+```
+
+---
+
+### between($dbname, $field, $min, $max, $filter)
+
+Range query.
+
+```php
+$products = $db->between("products", "price", 100, 500);
+$active = $db->between("products", "price", 100, 500, ["active" => true]);
+```
+
+---
+
+### sum($dbname, $field, $filter) / avg($dbname, $field, $filter)
+
+Aggregation functions.
+
+```php
+$total = $db->sum("orders", "amount");
+$average = $db->avg("users", "age");
+$filtered = $db->sum("orders", "amount", ["status" => "paid"]);
+```
+
+---
+
+### min($dbname, $field, $filter) / max($dbname, $field, $filter)
+
+Get minimum/maximum values.
+
+```php
+$cheapest = $db->min("products", "price");
+$mostExpensive = $db->max("products", "price");
+```
+
+---
+
+### first($dbname, $filter) / last($dbname, $filter)
+
+Get first or last matching record.
+
+```php
+$firstUser = $db->first("users");
+$lastOrder = $db->last("orders", ["user_id" => 5]);
+```
+
+---
+
+### exists($dbname, $filter)
+
+Check if records exist.
+
+```php
+if ($db->exists("users", ["email" => "john@test.com"])) {
+    echo "User exists!";
+}
+```
+
+---
+
 ## Error Handling
 
 Operations return error information when they fail:
@@ -381,11 +484,15 @@ vendor/bin/phpunit --testdox
 
 ## Roadmap
 
-- [ ] `distinct()` - Get unique values
-- [ ] `sort()` - Sort results
-- [ ] `count()` - Count records
-- [ ] `like()` - Pattern matching search
-- [ ] `aggregate()` - Aggregation functions
+- [x] `distinct()` - Get unique values
+- [x] `sort()` - Sort results
+- [x] `count()` - Count records
+- [x] `like()` - Pattern matching search
+- [x] `sum()` / `avg()` - Aggregation functions
+- [x] `min()` / `max()` - Min/Max values
+- [x] `first()` / `last()` - First/Last record
+- [x] `exists()` - Check if records exist
+- [x] `between()` - Range queries
 
 ---
 

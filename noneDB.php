@@ -474,5 +474,233 @@ class noneDB {
         }
         return $main_response;
     }
+
+    // ==========================================
+    // QUERY METHODS
+    // ==========================================
+
+    /**
+     * Get unique values for a field
+     * @param string $dbname
+     * @param string $field
+     * @return array|false
+     */
+    public function distinct($dbname, $field){
+        $all = $this->find($dbname, 0);
+        if($all === false) return false;
+        $values = [];
+        foreach($all as $record){
+            if(isset($record[$field]) && !in_array($record[$field], $values, true)){
+                $values[] = $record[$field];
+            }
+        }
+        return $values;
+    }
+
+    /**
+     * Sort array by field
+     * @param array $array Result from find()
+     * @param string $field Field to sort by
+     * @param string $order 'asc' or 'desc'
+     * @return array|false
+     */
+    public function sort($array, $field, $order = 'asc'){
+        if(!is_array($array) || count($array) === 0) return false;
+        $order = strtolower($order);
+        usort($array, function($a, $b) use ($field, $order){
+            if(!isset($a[$field]) || !isset($b[$field])) return 0;
+            $result = $a[$field] <=> $b[$field];
+            return $order === 'desc' ? -$result : $result;
+        });
+        return $array;
+    }
+
+    /**
+     * Count records matching filter
+     * @param string $dbname
+     * @param mixed $filter
+     * @return int
+     */
+    public function count($dbname, $filter = 0){
+        $result = $this->find($dbname, $filter);
+        if($result === false) return 0;
+        return count($result);
+    }
+
+    /**
+     * Pattern matching search (LIKE)
+     * @param string $dbname
+     * @param string $field
+     * @param string $pattern Use ^ for starts with, $ for ends with
+     * @return array|false
+     */
+    public function like($dbname, $field, $pattern){
+        $all = $this->find($dbname, 0);
+        if($all === false) return false;
+
+        $result = [];
+        // Convert simple patterns to regex
+        if(strpos($pattern, '^') === 0 || substr($pattern, -1) === '$'){
+            $regex = '/' . $pattern . '/i';
+        }else{
+            $regex = '/' . preg_quote($pattern, '/') . '/i';
+        }
+
+        foreach($all as $record){
+            if(isset($record[$field]) && preg_match($regex, (string)$record[$field])){
+                $result[] = $record;
+            }
+        }
+        return $result;
+    }
+
+    // ==========================================
+    // AGGREGATION METHODS
+    // ==========================================
+
+    /**
+     * Sum numeric field values
+     * @param string $dbname
+     * @param string $field
+     * @param mixed $filter
+     * @return float|int
+     */
+    public function sum($dbname, $field, $filter = 0){
+        $result = $this->find($dbname, $filter);
+        if($result === false) return 0;
+        $sum = 0;
+        foreach($result as $record){
+            if(isset($record[$field]) && is_numeric($record[$field])){
+                $sum += $record[$field];
+            }
+        }
+        return $sum;
+    }
+
+    /**
+     * Average of numeric field values
+     * @param string $dbname
+     * @param string $field
+     * @param mixed $filter
+     * @return float|int
+     */
+    public function avg($dbname, $field, $filter = 0){
+        $result = $this->find($dbname, $filter);
+        if($result === false || count($result) === 0) return 0;
+        $sum = 0;
+        $count = 0;
+        foreach($result as $record){
+            if(isset($record[$field]) && is_numeric($record[$field])){
+                $sum += $record[$field];
+                $count++;
+            }
+        }
+        return $count > 0 ? $sum / $count : 0;
+    }
+
+    /**
+     * Get minimum value of a field
+     * @param string $dbname
+     * @param string $field
+     * @param mixed $filter
+     * @return mixed|null
+     */
+    public function min($dbname, $field, $filter = 0){
+        $result = $this->find($dbname, $filter);
+        if($result === false || count($result) === 0) return null;
+        $min = null;
+        foreach($result as $record){
+            if(isset($record[$field])){
+                if($min === null || $record[$field] < $min){
+                    $min = $record[$field];
+                }
+            }
+        }
+        return $min;
+    }
+
+    /**
+     * Get maximum value of a field
+     * @param string $dbname
+     * @param string $field
+     * @param mixed $filter
+     * @return mixed|null
+     */
+    public function max($dbname, $field, $filter = 0){
+        $result = $this->find($dbname, $filter);
+        if($result === false || count($result) === 0) return null;
+        $max = null;
+        foreach($result as $record){
+            if(isset($record[$field])){
+                if($max === null || $record[$field] > $max){
+                    $max = $record[$field];
+                }
+            }
+        }
+        return $max;
+    }
+
+    // ==========================================
+    // UTILITY METHODS
+    // ==========================================
+
+    /**
+     * Get first matching record
+     * @param string $dbname
+     * @param mixed $filter
+     * @return array|null
+     */
+    public function first($dbname, $filter = 0){
+        $result = $this->find($dbname, $filter);
+        if($result === false || count($result) === 0) return null;
+        return $result[0];
+    }
+
+    /**
+     * Get last matching record
+     * @param string $dbname
+     * @param mixed $filter
+     * @return array|null
+     */
+    public function last($dbname, $filter = 0){
+        $result = $this->find($dbname, $filter);
+        if($result === false || count($result) === 0) return null;
+        return $result[count($result) - 1];
+    }
+
+    /**
+     * Check if records exist matching filter
+     * @param string $dbname
+     * @param mixed $filter
+     * @return bool
+     */
+    public function exists($dbname, $filter){
+        $result = $this->find($dbname, $filter);
+        return $result !== false && count($result) > 0;
+    }
+
+    /**
+     * Range query (min <= value <= max)
+     * @param string $dbname
+     * @param string $field
+     * @param mixed $min
+     * @param mixed $max
+     * @param mixed $filter Additional filter
+     * @return array|false
+     */
+    public function between($dbname, $field, $min, $max, $filter = 0){
+        $result = $this->find($dbname, $filter);
+        if($result === false) return false;
+        $filtered = [];
+        foreach($result as $record){
+            if(isset($record[$field])){
+                $value = $record[$field];
+                if($value >= $min && $value <= $max){
+                    $filtered[] = $record;
+                }
+            }
+        }
+        return $filtered;
+    }
 }
 ?>
