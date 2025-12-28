@@ -43,8 +43,8 @@ function generateRecord($i) {
 }
 
 echo blue("╔════════════════════════════════════════════════════════════════════╗\n");
-echo blue("║              noneDB Performance Benchmark v3.0                     ║\n");
-echo blue("║         Pure JSONL Storage Engine - O(1) Key Lookups              ║\n");
+echo blue("║              noneDB Performance Benchmark v3.1                     ║\n");
+echo blue("║    JSONL Engine + Static Cache + Batch Read + Single-Pass Filter  ║\n");
 echo blue("╚════════════════════════════════════════════════════════════════════╝\n\n");
 
 echo "PHP Version: " . PHP_VERSION . "\n";
@@ -64,9 +64,11 @@ foreach ($sizes as $size) {
     echo yellow("  Testing with " . number_format($size) . " records\n");
     echo yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    // Clean up
+    // Clean up files and caches
     $files = glob(__DIR__ . '/../db/*' . $dbName . '*');
     foreach ($files as $f) @unlink($f);
+    noneDB::clearStaticCache();  // Clear static cache for accurate benchmarks
+    clearstatcache(true);
 
     // ===== WRITE OPERATIONS =====
     echo "\n" . cyan("  Write Operations:\n");
@@ -103,6 +105,8 @@ foreach ($sizes as $size) {
     // Re-insert for read tests
     $files = glob(__DIR__ . '/../db/*' . $dbName . '*');
     foreach ($files as $f) @unlink($f);
+    noneDB::clearStaticCache();
+    clearstatcache(true);
     $db->insert($dbName, $data);
 
     // ===== READ OPERATIONS =====

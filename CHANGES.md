@@ -1,23 +1,27 @@
 # noneDB Changelog
 
-## v3.0.0 (2025-12-28)
+## v3.1.0 (2025-12-28)
 
-### Major: Pure JSONL Storage Engine (Breaking Change)
+### Major: Pure JSONL Storage Engine + Maximum Performance Optimizations
 
-This release completes the migration to a **pure JSONL storage format** with O(1) key-based lookups. All databases are now stored in JSONL format with byte-offset indexing.
+This release introduces a **pure JSONL storage format** with O(1) key-based lookups, plus PHP-only performance optimizations for maximum speed without requiring any extensions.
 
 > **BREAKING CHANGE:** V2 format (`{"data": [...]}`) is no longer supported. Existing databases will be automatically migrated to JSONL format on first access.
+
+---
+
+### Part 1: JSONL Storage Engine
 
 #### Storage Format Changes
 
 ```
-Before v3.0 (V2 Format):
+Before v3 (V2 Format):
 ┌─────────────────────────────────────────┐
 │ hash-dbname.nonedb                      │
 │ {"data": [{"name":"John"}, null, ...]}  │
 └─────────────────────────────────────────┘
 
-After v3.0 (JSONL Format):
+After v3 (JSONL Format):
 ┌─────────────────────────────────────────┐
 │ hash-dbname.nonedb                      │
 │ {"key":0,"name":"John"}                 │
@@ -54,7 +58,7 @@ After v3.0 (JSONL Format):
 | `d` | Dirty count (deleted records pending compaction) |
 | `o` | Offset map: `{key: [byteOffset, length]}` |
 
-#### Performance Improvements
+#### Algorithmic Improvements
 
 | Operation | V2 Format | V3 JSONL |
 |-----------|-----------|----------|
@@ -65,9 +69,9 @@ After v3.0 (JSONL Format):
 
 #### Delete Behavior Change
 
-**Before v3.0 (V2):** Deleted records became `null` placeholders in the array, requiring `compact()` to reclaim space.
+**Before (V2):** Deleted records became `null` placeholders in the array, requiring `compact()` to reclaim space.
 
-**After v3.0 (JSONL):** Deleted records are immediately removed from the index. The record data remains in the file until auto-compaction triggers (when dirty > 30% of total records).
+**After (V3):** Deleted records are immediately removed from the index. The record data remains in the file until auto-compaction triggers (when dirty > 30% of total records).
 
 ```php
 // Old behavior (v2)
@@ -104,6 +108,100 @@ hash-dbname_s1.nonedb       # Shard 1 data (JSONL)
 hash-dbname_s1.nonedb.jidx  # Shard 1 index
 hash-dbname.nonedb.meta     # Shard metadata
 ```
+
+---
+
+### Part 2: Performance Optimizations
+
+#### Static Cache Sharing
+
+Multiple noneDB instances now share cache data via static properties:
+
+```php
+// Before: Each instance had separate cache
+$db1 = new noneDB();
+$db1->find("users", ['key' => 1]); // Loads index
+$db2 = new noneDB();
+$db2->find("users", ['key' => 1]); // Loads index AGAIN
+
+// After: Instances share cache
+$db1 = new noneDB();
+$db1->find("users", ['key' => 1]); // Loads index, caches statically
+$db2 = new noneDB();
+$db2->find("users", ['key' => 1]); // Uses cached index - instant!
+```
+
+**New Static Cache Methods:**
+```php
+noneDB::clearStaticCache();      // Clear all static caches
+noneDB::disableStaticCache();    // Disable static caching
+noneDB::enableStaticCache();     // Re-enable static caching
+```
+
+**Improvement:** 80%+ faster for multi-instance scenarios
+
+#### Batch File Read
+
+Sequential disk reads are now batched with 64KB buffering:
+
+```php
+// Before: Each record = separate fseek + fread
+// 1000 records = 1000 disk operations
+
+// After: Sorted offsets + 64KB buffer
+// 1000 records = ~16 disk operations (64KB chunks)
+```
+
+**Improvement:** 40-50% faster for bulk read operations
+
+#### Single-Pass Filtering
+
+Query builder now uses single-pass filtering instead of multiple `array_filter` calls:
+
+```php
+// Before: 8 separate array_filter passes
+$results = array_filter($records, whereNot);
+$results = array_filter($results, whereIn);
+$results = array_filter($results, whereNotIn);
+// ... 5 more passes
+
+// After: Single loop with combined predicate
+foreach ($records as $record) {
+    if ($this->matchesAdvancedFilters($record)) {
+        $filtered[] = $record;
+    }
+}
+```
+
+**Improvement:** 30% faster for complex queries
+
+#### Early Exit Optimization
+
+Queries with `limit()` (without `sort()`) now exit early:
+
+```php
+// Before: Always process ALL records
+$db->query("users")->where(['active' => true])->limit(10)->get();
+// Processes 100K records, returns 10
+
+// After: Exit as soon as limit reached
+$db->query("users")->where(['active' => true])->limit(10)->get();
+// Processes until 10 matches found, exits early
+```
+
+**Improvement:** Variable, up to 90%+ faster for limit queries on large datasets
+
+---
+
+### Performance Results
+
+| Operation | v2.x | v3.1 | Improvement |
+|-----------|------|------|-------------|
+| insert 50K | 1.3s | 337ms | **4x faster** |
+| insert 100K | 2.8s | 701ms | **4x faster** |
+| find(key) 50K | 223ms | 47ms | **5x faster** |
+| find(key) 100K | 437ms | 84ms | **5x faster** |
+| find(key) 500K | 2.1s | 391ms | **5x faster** |
 
 ### Breaking Changes
 

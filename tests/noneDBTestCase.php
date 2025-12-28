@@ -69,6 +69,9 @@ abstract class noneDBTestCase extends TestCase
         // Clear PHP's file stat cache
         clearstatcache(true);
 
+        // Clear noneDB's static cache to prevent cross-test pollution
+        \noneDB::clearStaticCache();
+
         if (!file_exists($this->testDbDir)) {
             mkdir($this->testDbDir, 0777, true);
             return;

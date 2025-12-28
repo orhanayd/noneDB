@@ -49,12 +49,66 @@ class noneDB {
     // Index configuration - v2.3.0
     private $indexEnabled=true;               // Enable/disable primary key indexing
     private $indexCache=[];                   // Runtime cache for index data
+    private $shardedCache=[];                 // Cache isSharded results
 
     // JSONL Storage Engine - v2.4.0
     private $jsonlEnabled=true;               // Enable JSONL format for new DBs
     private $jsonlAutoMigrate=true;           // Auto-migrate v2 to JSONL on first access
     private $jsonlFormatCache=[];             // Cache format detection per DB
     private $jsonlGarbageThreshold=0.3;       // Trigger compaction when garbage > 30%
+
+    // Static caches for cross-instance sharing - v3.1.0
+    private static $staticIndexCache=[];      // Shared index cache across instances
+    private static $staticShardedCache=[];    // Shared isSharded results
+    private static $staticMetaCache=[];       // Shared meta data cache
+    private static $staticMetaCacheTime=[];   // Shared meta cache timestamps
+    private static $staticHashCache=[];       // Shared hash cache (PBKDF2 is expensive)
+    private static $staticFormatCache=[];     // Shared format detection cache
+    private static $staticCacheEnabled=true;  // Enable/disable static caching
+
+    /**
+     * Constructor - initialize static caches
+     */
+    public function __construct(){
+        // Link instance caches to static caches for cross-instance sharing
+        if(self::$staticCacheEnabled){
+            $this->indexCache = &self::$staticIndexCache;
+            $this->shardedCache = &self::$staticShardedCache;
+            $this->metaCache = &self::$staticMetaCache;
+            $this->metaCacheTime = &self::$staticMetaCacheTime;
+            $this->hashCache = &self::$staticHashCache;
+            $this->jsonlFormatCache = &self::$staticFormatCache;
+        }
+    }
+
+    /**
+     * Clear all static caches (useful for testing or memory management)
+     * @return void
+     */
+    public static function clearStaticCache(){
+        self::$staticIndexCache = [];
+        self::$staticShardedCache = [];
+        self::$staticMetaCache = [];
+        self::$staticMetaCacheTime = [];
+        self::$staticHashCache = [];
+        self::$staticFormatCache = [];
+    }
+
+    /**
+     * Disable static caching (each instance uses its own cache)
+     * @return void
+     */
+    public static function disableStaticCache(){
+        self::$staticCacheEnabled = false;
+    }
+
+    /**
+     * Enable static caching (default)
+     * @return void
+     */
+    public static function enableStaticCache(){
+        self::$staticCacheEnabled = true;
+    }
 
     /**
      * hash to db name for security
@@ -305,8 +359,6 @@ class noneDB {
      * @param string $dbname
      * @return bool
      */
-    private $shardedCache=[];  // Cache isSharded results
-
     private function isSharded($dbname){
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
 
@@ -989,6 +1041,78 @@ class noneDB {
     }
 
     /**
+     * Batch read multiple JSONL records efficiently - v3.1.0
+     * Opens file once and uses buffered reading for better performance
+     * @param string $path File path
+     * @param array $offsets Array of [key => [offset, length], ...]
+     * @return array Array of [key => record, ...]
+     */
+    private function readJsonlRecordsBatch($path, $offsets){
+        if(empty($offsets)){
+            return [];
+        }
+
+        $handle = fopen($path, 'rb');
+        if($handle === false){
+            return [];
+        }
+
+        // Acquire shared lock
+        if(!flock($handle, LOCK_SH)){
+            fclose($handle);
+            return [];
+        }
+
+        $records = [];
+        $bufferSize = 65536;  // 64KB buffer
+        $buffer = '';
+        $bufferStart = -1;
+        $bufferEnd = -1;
+
+        // Sort offsets by position to minimize disk seeks
+        $sortedOffsets = $offsets;
+        uasort($sortedOffsets, function($a, $b){
+            return $a[0] - $b[0];
+        });
+
+        foreach($sortedOffsets as $key => $location){
+            $offset = $location[0];
+            $length = $location[1];
+
+            // Check if data is in current buffer
+            if($offset >= $bufferStart && ($offset + $length) <= $bufferEnd){
+                // Read from buffer
+                $localOffset = $offset - $bufferStart;
+                $json = substr($buffer, $localOffset, $length);
+            } else {
+                // Need to read from file
+                fseek($handle, $offset, SEEK_SET);
+
+                // Read enough data (at least the record, preferably more for next records)
+                $readSize = max($length, $bufferSize);
+                $buffer = fread($handle, $readSize);
+                $bufferStart = $offset;
+                $bufferEnd = $offset + strlen($buffer);
+
+                // Extract the record
+                $json = substr($buffer, 0, $length);
+            }
+
+            if($json !== false){
+                $record = json_decode($json, true);
+                if($record !== null){
+                    $records[$key] = $record;
+                }
+            }
+        }
+
+        flock($handle, LOCK_UN);
+        fclose($handle);
+
+        return $records;
+    }
+
+    /**
      * Find by key using JSONL index - O(1)
      * @param string $dbname
      * @param int|array $keys
@@ -1009,18 +1133,37 @@ class noneDB {
         }
 
         $keys = is_array($keys) ? $keys : [$keys];
-        $result = [];
 
+        // Collect offsets for requested keys
+        $offsets = [];
         foreach($keys as $key){
             $key = (int)$key;
-            if(!isset($index['o'][$key])){
-                continue;
+            if(isset($index['o'][$key])){
+                $offsets[$key] = $index['o'][$key];
             }
+        }
 
-            [$offset, $length] = $index['o'][$key];
+        if(empty($offsets)){
+            return [];
+        }
+
+        // Single key: use simple read (no batch overhead)
+        if(count($offsets) === 1){
+            $key = array_key_first($offsets);
+            [$offset, $length] = $offsets[$key];
             $record = $this->readJsonlRecord($path, $offset, $length);
-            if($record !== null){
-                $result[] = $record;
+            return $record !== null ? [$record] : [];
+        }
+
+        // Multiple keys: use batch read for efficiency (v3.1.0)
+        $records = $this->readJsonlRecordsBatch($path, $offsets);
+
+        // Maintain original key order
+        $result = [];
+        foreach($keys as $key){
+            $key = (int)$key;
+            if(isset($records[$key])){
+                $result[] = $records[$key];
             }
         }
 
@@ -1035,21 +1178,14 @@ class noneDB {
      * @return array
      */
     private function readAllJsonl($path, $index = null){
-        // If index provided, use byte offsets for accurate reading
+        // If index provided, use batch read for better performance (v3.1.0)
         if($index !== null && isset($index['o'])){
-            $results = [];
-            // Sort by key to maintain order
-            $keys = array_keys($index['o']);
-            sort($keys, SORT_NUMERIC);
+            // Use batch read for efficiency (single file open, buffered reads)
+            $records = $this->readJsonlRecordsBatch($path, $index['o']);
 
-            foreach($keys as $key){
-                $location = $index['o'][$key];
-                $record = $this->readJsonlRecord($path, $location[0], $location[1]);
-                if($record !== null){
-                    $results[] = $record;
-                }
-            }
-            return $results;
+            // Sort by key and return as indexed array
+            ksort($records, SORT_NUMERIC);
+            return array_values($records);
         }
 
         // Fallback: scan all lines (no index)
@@ -3882,6 +4018,119 @@ class noneDBQuery {
     }
 
     // ==========================================
+    // FILTER HELPER METHODS (v3.1.0)
+    // ==========================================
+
+    /**
+     * Check if a record matches all advanced filters (single-pass optimization)
+     * Consolidates whereNot, whereIn, whereNotIn, like, notLike, between, notBetween, search
+     * @param array $record
+     * @return bool
+     */
+    private function matchesAdvancedFilters(array $record): bool {
+        // whereNot filters
+        foreach ($this->whereNotFilters as $field => $value) {
+            if (array_key_exists($field, $record) && $record[$field] === $value) {
+                return false;
+            }
+        }
+
+        // whereIn filters
+        foreach ($this->whereInFilters as $filter) {
+            if (!array_key_exists($filter['field'], $record)) return false;
+            if (!in_array($record[$filter['field']], $filter['values'], true)) return false;
+        }
+
+        // whereNotIn filters
+        foreach ($this->whereNotInFilters as $filter) {
+            if (array_key_exists($filter['field'], $record)) {
+                if (in_array($record[$filter['field']], $filter['values'], true)) return false;
+            }
+        }
+
+        // like filters
+        foreach ($this->likeFilters as $like) {
+            if (!isset($record[$like['field']])) return false;
+            $value = $record[$like['field']];
+            if (is_array($value) || is_object($value)) return false;
+            $pattern = $like['pattern'];
+            if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
+                $regex = '/' . $pattern . '/i';
+            } else {
+                $regex = '/' . preg_quote($pattern, '/') . '/i';
+            }
+            if (!preg_match($regex, (string)$value)) return false;
+        }
+
+        // notLike filters
+        foreach ($this->notLikeFilters as $notLike) {
+            if (isset($record[$notLike['field']])) {
+                $value = $record[$notLike['field']];
+                if (!is_array($value) && !is_object($value)) {
+                    $pattern = $notLike['pattern'];
+                    if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
+                        $regex = '/' . $pattern . '/i';
+                    } else {
+                        $regex = '/' . preg_quote($pattern, '/') . '/i';
+                    }
+                    if (preg_match($regex, (string)$value)) return false;
+                }
+            }
+        }
+
+        // between filters
+        foreach ($this->betweenFilters as $between) {
+            if (!isset($record[$between['field']])) return false;
+            $value = $record[$between['field']];
+            if ($value < $between['min'] || $value > $between['max']) return false;
+        }
+
+        // notBetween filters
+        foreach ($this->notBetweenFilters as $notBetween) {
+            if (isset($record[$notBetween['field']])) {
+                $value = $record[$notBetween['field']];
+                if ($value >= $notBetween['min'] && $value <= $notBetween['max']) return false;
+            }
+        }
+
+        // search filters
+        foreach ($this->searchFilters as $search) {
+            $term = strtolower($search['term']);
+            if ($term === '') continue;
+            $fields = $search['fields'];
+            $found = false;
+            $searchFields = empty($fields) ? array_keys($record) : $fields;
+            foreach ($searchFields as $field) {
+                if (!isset($record[$field])) continue;
+                $value = $record[$field];
+                if (is_array($value) || is_object($value)) continue;
+                if (strpos(strtolower((string)$value), $term) !== false) {
+                    $found = true;
+                    break;
+                }
+            }
+            if (!$found) return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if we have any advanced filters that need single-pass processing
+     * @return bool
+     */
+    private function hasAdvancedFilters(): bool {
+        return count($this->whereNotFilters) > 0 ||
+               count($this->whereInFilters) > 0 ||
+               count($this->whereNotInFilters) > 0 ||
+               count($this->likeFilters) > 0 ||
+               count($this->notLikeFilters) > 0 ||
+               count($this->betweenFilters) > 0 ||
+               count($this->notBetweenFilters) > 0 ||
+               count($this->searchFilters) > 0;
+    }
+
+    // ==========================================
     // CHAINABLE METHODS (return $this)
     // ==========================================
 
@@ -4164,110 +4413,27 @@ class noneDBQuery {
             if ($results === false) return [];
         }
 
-        // 2. Apply whereNot filters
-        foreach ($this->whereNotFilters as $field => $value) {
-            $results = array_filter($results, function($record) use ($field, $value) {
-                if (!array_key_exists($field, $record)) return true;
-                return $record[$field] !== $value;
-            });
-            $results = array_values($results);
-        }
+        // 2-9. Apply all advanced filters in single pass (v3.1.0 optimization)
+        // Replaces multiple array_filter calls with one pass for better performance
+        if ($this->hasAdvancedFilters()) {
+            $filtered = [];
+            // Early exit optimization: when no join/groupBy/sort, we can stop at limit+offset
+            $canEarlyExit = empty($this->joinConfigs) &&
+                            $this->groupByField === null &&
+                            $this->sortField === null &&
+                            $this->limitCount !== null;
+            $earlyExitTarget = $canEarlyExit ? ($this->limitCount + $this->offsetCount) : PHP_INT_MAX;
 
-        // 3. Apply whereIn filters
-        foreach ($this->whereInFilters as $filter) {
-            $results = array_filter($results, function($record) use ($filter) {
-                // Use array_key_exists instead of isset to handle null values
-                if (!array_key_exists($filter['field'], $record)) return false;
-                return in_array($record[$filter['field']], $filter['values'], true);
-            });
-            $results = array_values($results);
-        }
-
-        // 4. Apply whereNotIn filters
-        foreach ($this->whereNotInFilters as $filter) {
-            $results = array_filter($results, function($record) use ($filter) {
-                // Use array_key_exists instead of isset to handle null values
-                if (!array_key_exists($filter['field'], $record)) return true;
-                return !in_array($record[$filter['field']], $filter['values'], true);
-            });
-            $results = array_values($results);
-        }
-
-        // 5. Apply like filters
-        foreach ($this->likeFilters as $like) {
-            $results = array_filter($results, function($record) use ($like) {
-                if (!isset($record[$like['field']])) return false;
-                $value = $record[$like['field']];
-                if (is_array($value) || is_object($value)) return false;
-                $pattern = $like['pattern'];
-                if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
-                    $regex = '/' . $pattern . '/i';
-                } else {
-                    $regex = '/' . preg_quote($pattern, '/') . '/i';
-                }
-                return preg_match($regex, (string)$value);
-            });
-            $results = array_values($results);
-        }
-
-        // 6. Apply notLike filters
-        foreach ($this->notLikeFilters as $notLike) {
-            $results = array_filter($results, function($record) use ($notLike) {
-                if (!isset($record[$notLike['field']])) return true;
-                $value = $record[$notLike['field']];
-                if (is_array($value) || is_object($value)) return true;
-                $pattern = $notLike['pattern'];
-                if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
-                    $regex = '/' . $pattern . '/i';
-                } else {
-                    $regex = '/' . preg_quote($pattern, '/') . '/i';
-                }
-                return !preg_match($regex, (string)$value);
-            });
-            $results = array_values($results);
-        }
-
-        // 7. Apply between filters
-        foreach ($this->betweenFilters as $between) {
-            $results = array_filter($results, function($record) use ($between) {
-                if (!isset($record[$between['field']])) return false;
-                $value = $record[$between['field']];
-                return $value >= $between['min'] && $value <= $between['max'];
-            });
-            $results = array_values($results);
-        }
-
-        // 8. Apply notBetween filters
-        foreach ($this->notBetweenFilters as $notBetween) {
-            $results = array_filter($results, function($record) use ($notBetween) {
-                if (!isset($record[$notBetween['field']])) return true;
-                $value = $record[$notBetween['field']];
-                return $value < $notBetween['min'] || $value > $notBetween['max'];
-            });
-            $results = array_values($results);
-        }
-
-        // 9. Apply search filters
-        foreach ($this->searchFilters as $search) {
-            $term = strtolower($search['term']);
-            if ($term === '') continue; // Skip empty search terms (PHP 7.4 strpos compatibility)
-            $fields = $search['fields'];
-            $results = array_filter($results, function($record) use ($term, $fields) {
-                $searchFields = $fields;
-                if (empty($searchFields)) {
-                    $searchFields = array_keys($record);
-                }
-                foreach ($searchFields as $field) {
-                    if (!isset($record[$field])) continue;
-                    $value = $record[$field];
-                    if (is_array($value) || is_object($value)) continue;
-                    if (strpos(strtolower((string)$value), $term) !== false) {
-                        return true;
+            foreach ($results as $record) {
+                if ($this->matchesAdvancedFilters($record)) {
+                    $filtered[] = $record;
+                    // Early exit when we have enough records
+                    if (count($filtered) >= $earlyExitTarget) {
+                        break;
                     }
                 }
-                return false;
-            });
-            $results = array_values($results);
+            }
+            $results = $filtered;
         }
 
         // 10. Apply joins
