@@ -21,7 +21,7 @@ class noneDB {
 
     // Sharding configuration
     private $shardingEnabled=true;   // Enable/disable auto-sharding
-    private $shardSize=100000;        // Max records per shard (100K)
+    private $shardSize=10000;         // Max records per shard (10K) - optimal for filter operations
     private $autoMigrate=true;        // Auto-migrate legacy DBs to sharded format
 
     // File locking configuration
@@ -305,9 +305,24 @@ class noneDB {
      * @param string $dbname
      * @return bool
      */
+    private $shardedCache=[];  // Cache isSharded results
+
     private function isSharded($dbname){
         $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
-        return file_exists($this->getMetaPath($dbname));
+
+        // Check cache first
+        if(isset($this->shardedCache[$dbname])){
+            return $this->shardedCache[$dbname];
+        }
+
+        $result = file_exists($this->getMetaPath($dbname));
+        $this->shardedCache[$dbname] = $result;
+        return $result;
+    }
+
+    private function invalidateShardedCache($dbname){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        unset($this->shardedCache[$dbname]);
     }
 
     /**
@@ -1869,6 +1884,9 @@ class noneDB {
 
         // Clear index cache for this database
         unset($this->indexCache[$indexPath]);
+
+        // Invalidate sharded cache - database is now sharded
+        $this->invalidateShardedCache($dbname);
 
         return true;
     }
