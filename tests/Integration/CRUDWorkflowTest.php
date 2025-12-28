@@ -120,38 +120,33 @@ class CRUDWorkflowTest extends noneDBTestCase
     {
         $dbName = 'persistence_test';
 
-        // Helper to set test directory on instance
-        $setTestDir = function($db) {
-            $reflector = new \ReflectionClass(\noneDB::class);
-            $property = $reflector->getProperty('dbDir');
-            $property->setAccessible(true);
-            $property->setValue($db, TEST_DB_DIR);
-        };
+        // Test config for creating new instances
+        $testConfig = [
+            'secretKey' => 'test_secret_key_for_unit_tests',
+            'dbDir' => TEST_DB_DIR,
+            'autoCreateDB' => true
+        ];
 
         // Insert with first instance
-        $db1 = new \noneDB();
-        $setTestDir($db1);
+        $db1 = new \noneDB($testConfig);
         $db1->insert($dbName, ['mykey' => 'value1']);
 
         // Read with second instance
-        $db2 = new \noneDB();
-        $setTestDir($db2);
+        $db2 = new \noneDB($testConfig);
         $result = $db2->find($dbName, ['mykey' => 'value1']);
 
         $this->assertCount(1, $result);
         $this->assertEquals('value1', $result[0]['mykey']);
 
         // Update with third instance
-        $db3 = new \noneDB();
-        $setTestDir($db3);
+        $db3 = new \noneDB($testConfig);
         $db3->update($dbName, [
             ['mykey' => 'value1'],
             ['set' => ['mykey' => 'value2']]
         ]);
 
         // Verify with fourth instance
-        $db4 = new \noneDB();
-        $setTestDir($db4);
+        $db4 = new \noneDB($testConfig);
         $updated = $db4->find($dbName, ['mykey' => 'value2']);
 
         $this->assertCount(1, $updated);

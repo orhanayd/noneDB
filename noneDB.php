@@ -15,9 +15,14 @@ ini_set('memory_limit', '-1');
 
 class noneDB {
 
-    private $dbDir=__DIR__."/"."db/"; // please change this path and don't fotget end with /
-    private $secretKey="nonedb_123"; // please change this secret key! and don't share anyone or anywhere!!
-    private $autoCreateDB=true; // if you want to auto create your db true or false
+    // Configuration file path (relative to dbDir or absolute)
+    private static $configFile = '.nonedb';
+    private static $configLoaded = false;
+    private static $configData = null;
+
+    private $dbDir = null;      // Set via .nonedb config file or constructor
+    private $secretKey = null;  // Set via .nonedb config file or constructor
+    private $autoCreateDB = true;
 
     // Sharding configuration
     private $shardingEnabled=true;   // Enable/disable auto-sharding
@@ -77,9 +82,14 @@ class noneDB {
     private $hashCacheLoaded = false;         // Track if persistent cache was loaded
 
     /**
-     * Constructor - initialize static caches
+     * Constructor - load config and initialize static caches
+     * @param array|null $config Optional config array to override file config
+     * @throws \RuntimeException If config file is missing in production mode
      */
-    public function __construct(){
+    public function __construct($config = null){
+        // Load configuration
+        $this->loadConfig($config);
+
         // Link instance caches to static caches for cross-instance sharing
         if(self::$staticCacheEnabled){
             $this->indexCache = &self::$staticIndexCache;
@@ -89,6 +99,184 @@ class noneDB {
             $this->hashCache = &self::$staticHashCache;
             $this->jsonlFormatCache = &self::$staticFormatCache;
             $this->fieldIndexCache = &self::$staticFieldIndexCache;
+        }
+    }
+
+    /**
+     * Load configuration from file or array
+     * Config file locations checked (in order):
+     * 1. .nonedb in project root (dirname of including script)
+     * 2. .nonedb in noneDB.php directory
+     * 3. .nonedb in dbDir
+     *
+     * @param array|null $config Optional config array
+     * @throws \RuntimeException If config file missing and not in dev mode
+     */
+    private function loadConfig($config = null){
+        // If config array provided, use it directly
+        if(is_array($config)){
+            $this->applyConfig($config);
+            return;
+        }
+
+        // If already loaded from file, just apply
+        if(self::$configLoaded && self::$configData !== null){
+            $this->applyConfig(self::$configData);
+            return;
+        }
+
+        // Try to find config file
+        $configPaths = [
+            dirname($_SERVER['SCRIPT_FILENAME'] ?? __DIR__) . '/' . self::$configFile,
+            __DIR__ . '/' . self::$configFile,
+            $this->dbDir . self::$configFile
+        ];
+
+        $configPath = null;
+        foreach($configPaths as $path){
+            if(file_exists($path)){
+                $configPath = $path;
+                break;
+            }
+        }
+
+        if($configPath !== null){
+            // Config file found - load it
+            $content = @file_get_contents($configPath);
+            if($content === false){
+                throw new \RuntimeException("noneDB: Cannot read config file: {$configPath}");
+            }
+
+            $data = @json_decode($content, true);
+            if($data === null && json_last_error() !== JSON_ERROR_NONE){
+                throw new \RuntimeException("noneDB: Invalid JSON in config file: {$configPath}");
+            }
+
+            self::$configData = $data;
+            self::$configLoaded = true;
+            $this->applyConfig($data);
+            return;
+        }
+
+        // No config file found
+        // Check for development mode
+        $devMode = getenv('NONEDB_DEV_MODE') === 'true'
+                || getenv('NONEDB_DEV_MODE') === '1'
+                || (defined('NONEDB_DEV_MODE') && NONEDB_DEV_MODE === true);
+
+        if($devMode){
+            // Dev mode - use defaults
+            self::$configLoaded = true;
+            self::$configData = [];
+            // Set default values for dev mode
+            $this->dbDir = __DIR__ . '/db/';
+            $this->secretKey = 'nonedb_dev_mode_key_' . md5(__DIR__);
+            return;
+        }
+
+        // Production mode without config file - throw error
+        throw new \RuntimeException(
+            "noneDB: Configuration file not found!\n" .
+            "Create a '.nonedb' config file in your project root.\n" .
+            "See '.nonedb.example' for reference.\n" .
+            "For development, set NONEDB_DEV_MODE=true environment variable or define('NONEDB_DEV_MODE', true);"
+        );
+    }
+
+    /**
+     * Apply configuration values to instance properties
+     * @param array $config Configuration array
+     */
+    private function applyConfig(array $config){
+        // Core settings
+        if(isset($config['secretKey'])){
+            $this->secretKey = $config['secretKey'];
+        }
+        if(isset($config['dbDir'])){
+            // Handle relative paths
+            $dbDir = $config['dbDir'];
+            if(substr($dbDir, 0, 2) === './'){
+                $dbDir = dirname($_SERVER['SCRIPT_FILENAME'] ?? __DIR__) . '/' . substr($dbDir, 2);
+            }
+            if(substr($dbDir, -1) !== '/'){
+                $dbDir .= '/';
+            }
+            $this->dbDir = $dbDir;
+        }
+        if(isset($config['autoCreateDB'])){
+            $this->autoCreateDB = (bool)$config['autoCreateDB'];
+        }
+
+        // Sharding settings
+        if(isset($config['shardingEnabled'])){
+            $this->shardingEnabled = (bool)$config['shardingEnabled'];
+        }
+        if(isset($config['shardSize'])){
+            $this->shardSize = (int)$config['shardSize'];
+        }
+        if(isset($config['autoMigrate'])){
+            $this->autoMigrate = (bool)$config['autoMigrate'];
+        }
+
+        // Compaction settings
+        if(isset($config['autoCompactThreshold'])){
+            $this->jsonlGarbageThreshold = (float)$config['autoCompactThreshold'];
+        }
+
+        // Lock settings
+        if(isset($config['lockTimeout'])){
+            $this->lockTimeout = (int)$config['lockTimeout'];
+        }
+        if(isset($config['lockRetryDelay'])){
+            $this->lockRetryDelay = (int)$config['lockRetryDelay'];
+        }
+    }
+
+    /**
+     * Check if config file exists
+     * @return bool
+     */
+    public static function configExists(): bool {
+        $configPaths = [
+            dirname($_SERVER['SCRIPT_FILENAME'] ?? __DIR__) . '/' . self::$configFile,
+            __DIR__ . '/' . self::$configFile
+        ];
+
+        foreach($configPaths as $path){
+            if(file_exists($path)){
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Get the config file template path
+     * @return string|null
+     */
+    public static function getConfigTemplate(): ?string {
+        $templatePath = __DIR__ . '/.nonedb.example';
+        return file_exists($templatePath) ? $templatePath : null;
+    }
+
+    /**
+     * Clear config cache (useful for testing)
+     * @return void
+     */
+    public static function clearConfigCache(): void {
+        self::$configLoaded = false;
+        self::$configData = null;
+    }
+
+    /**
+     * Set development mode programmatically
+     * Useful for testing or when env vars are not available
+     * @param bool $enabled
+     * @return void
+     */
+    public static function setDevMode(bool $enabled): void {
+        if($enabled && !defined('NONEDB_DEV_MODE')){
+            define('NONEDB_DEV_MODE', true);
         }
     }
 

@@ -3,7 +3,7 @@
 [![Version](https://img.shields.io/badge/version-3.0.0-orange.svg)](CHANGES.md)
 [![PHP Version](https://img.shields.io/badge/PHP-7.4%2B-blue.svg)](https://php.net)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-759%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-774%20passed-brightgreen.svg)](tests/)
 [![Thread Safe](https://img.shields.io/badge/thread--safe-atomic%20locking-success.svg)](#concurrent-access--atomic-operations)
 
 **noneDB** is a lightweight, file-based NoSQL database for PHP. No installation required - just include and go!
@@ -44,27 +44,40 @@ composer require orhanayd/nonedb
 
 ## Upgrading
 
-> **CRITICAL: Before updating noneDB, you MUST backup your `$secretKey`!**
+> **CRITICAL: Before updating noneDB, you MUST backup your `secretKey`!**
 
-The `$secretKey` is used to hash database filenames. If you lose it or it changes, you will **lose access to all your existing data**.
+The `secretKey` is used to hash database filenames. If you lose it or it changes, you will **lose access to all your existing data**.
 
-### Upgrade Steps
+### Upgrade Steps (v3.0+)
 
-1. **Before update:** Copy your current `$secretKey` from `noneDB.php`
-   ```php
-   private $secretKey = "your_current_key";  // SAVE THIS!
+With the new config file system, upgrading is safer:
+
+1. **First time:** Create a `.nonedb` config file with your settings
+   ```bash
+   cp .nonedb.example .nonedb
+   # Edit .nonedb with your secretKey and other settings
    ```
 
-2. **Update:** Replace `noneDB.php` with the new version
+2. **Future updates:** Simply replace `noneDB.php` - your config is separate!
 
-3. **After update:** Restore your `$secretKey` in the new `noneDB.php`
-   ```php
-   private $secretKey = "your_current_key";  // PASTE IT BACK!
+3. **Verify:** Test that your databases are accessible
+
+### Upgrading from v2.x
+
+If you were storing `secretKey` directly in `noneDB.php`:
+
+1. **Before update:** Copy your current `secretKey` from `noneDB.php`
+2. **Create config file:** Put it in `.nonedb`:
+   ```json
+   {
+       "secretKey": "your_current_key",
+       "dbDir": "./db/"
+   }
    ```
-
+3. **Update:** Replace `noneDB.php` with the new version
 4. **Verify:** Test that your databases are accessible
 
-> **Warning:** If you use the default key `"nonedb_123"` in production, change it immediately. But once changed, never change it again or you'll lose access to your data.
+> **Warning:** Never change your `secretKey` after creating data or you'll lose access to it.
 
 ---
 
@@ -72,29 +85,83 @@ The `$secretKey` is used to hash database filenames. If you lose it or it change
 
 > **IMPORTANT: Change these settings before production use!**
 
-Edit `noneDB.php`:
+### Config File (Recommended)
+
+Create a `.nonedb` file in your project root:
+
+```json
+{
+    "secretKey": "YOUR_SECURE_RANDOM_STRING",
+    "dbDir": "./db/",
+    "autoCreateDB": true,
+    "shardingEnabled": true,
+    "shardSize": 10000,
+    "autoMigrate": true,
+    "autoCompactThreshold": 0.3,
+    "lockTimeout": 5,
+    "lockRetryDelay": 10000
+}
+```
+
+A template is provided in `.nonedb.example`. Copy and customize:
+
+```bash
+cp .nonedb.example .nonedb
+# Edit .nonedb with your settings
+```
+
+> **Important:** Add `.nonedb` to your `.gitignore` to keep your secret key private!
+
+### Programmatic Configuration
+
+You can also pass configuration as an array:
 
 ```php
-private $dbDir = __DIR__."/db/";      // Database directory path
-private $secretKey = "nonedb_123";     // Secret key for hashing - CHANGE THIS!
-private $autoCreateDB = true;          // Auto-create databases on first use
-
-// Sharding configuration
-private $shardingEnabled = true;       // Enable auto-sharding for large datasets
-private $shardSize = 10000;            // Records per shard (default: 10K)
-private $autoMigrate = true;           // Auto-migrate when threshold reached
-
-// Auto-compaction configuration
-private $autoCompactThreshold = 0.3;   // Compact when 30% of records are deleted
+$db = new noneDB([
+    'secretKey' => 'your_secure_key',
+    'dbDir' => '/path/to/db/',
+    'autoCreateDB' => true
+]);
 ```
+
+### Development Mode
+
+In development, you can skip requiring a config file by enabling dev mode:
+
+```php
+// Option 1: Environment variable
+putenv('NONEDB_DEV_MODE=1');
+
+// Option 2: Constant
+define('NONEDB_DEV_MODE', true);
+
+// Option 3: Static method
+noneDB::setDevMode(true);
+```
+
+> **Warning:** Never enable dev mode in production!
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `secretKey` | (required) | Secret key for hashing database names |
+| `dbDir` | `./db/` | Database directory path |
+| `autoCreateDB` | `true` | Auto-create databases on first use |
+| `shardingEnabled` | `true` | Enable auto-sharding for large datasets |
+| `shardSize` | `10000` | Records per shard |
+| `autoMigrate` | `true` | Auto-migrate when threshold reached |
+| `autoCompactThreshold` | `0.3` | Compact when 30% of records are deleted |
+| `lockTimeout` | `5` | File lock timeout in seconds |
+| `lockRetryDelay` | `10000` | Lock retry delay in microseconds |
 
 ### Security Warnings
 
 | Setting | Warning |
 |---------|---------|
-| `$secretKey` | **MUST change before production!** Used for hashing database names. Never share or commit to public repos. |
-| `$dbDir` | Should be outside web root or protected with `.htaccess` |
-| `$autoCreateDB` | Set to `false` in production to prevent accidental database creation |
+| `secretKey` | **MUST change before production!** Used for hashing database names. Never share or commit to public repos. |
+| `dbDir` | Should be outside web root or protected with `.htaccess` |
+| `autoCreateDB` | Set to `false` in production to prevent accidental database creation |
 
 ### Protecting Database Directory
 

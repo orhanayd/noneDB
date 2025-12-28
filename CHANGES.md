@@ -256,12 +256,83 @@ Optimized read path for index files:
 
 > **Note:** noneDB now wins **7 out of 8** operations. Count uses O(1) index metadata lookup.
 
+---
+
+### Part 3: Configuration File System
+
+#### External Config File (.nonedb)
+
+Configuration is now stored in an external JSON file instead of hardcoded in `noneDB.php`:
+
+```json
+{
+    "secretKey": "YOUR_SECURE_RANDOM_STRING",
+    "dbDir": "./db/",
+    "autoCreateDB": true,
+    "shardingEnabled": true,
+    "shardSize": 10000,
+    "autoMigrate": true,
+    "autoCompactThreshold": 0.3,
+    "lockTimeout": 5,
+    "lockRetryDelay": 10000
+}
+```
+
+**Benefits:**
+- Secrets stay out of source code
+- Easier upgrades (just replace `noneDB.php`)
+- Different configs for different environments
+- `.nonedb` can be gitignored
+
+#### Configuration Methods
+
+```php
+// Method 1: Config file (recommended)
+// Place .nonedb in project root or parent directories
+$db = new noneDB();
+
+// Method 2: Programmatic config
+$db = new noneDB([
+    'secretKey' => 'your_key',
+    'dbDir' => './db/'
+]);
+
+// Method 3: Dev mode (skips config requirement)
+noneDB::setDevMode(true);
+$db = new noneDB();
+```
+
+#### Dev Mode
+
+For development without a config file:
+
+```php
+// Option 1: Environment variable
+putenv('NONEDB_DEV_MODE=1');
+
+// Option 2: Constant
+define('NONEDB_DEV_MODE', true);
+
+// Option 3: Static method
+noneDB::setDevMode(true);
+```
+
+#### New Static Methods
+
+```php
+noneDB::configExists();       // Check if config file exists
+noneDB::getConfigTemplate();  // Get config template array
+noneDB::clearConfigCache();   // Clear cached config
+noneDB::setDevMode(true);     // Enable dev mode
+```
+
 ### Breaking Changes
 
 1. **V2 format no longer supported** - Databases are auto-migrated on first access
 2. **Delete no longer creates null placeholders** - Records removed from index immediately
 3. **Index file (.jidx) required** - Each database/shard needs its index file
 4. **compact() behavior changed** - Now rewrites JSONL file, not JSON array
+5. **Config file or programmatic config required** - Use `.nonedb` file, constructor config array, or enable dev mode
 
 ### Migration
 
@@ -275,10 +346,11 @@ Automatic migration occurs on first database access:
 
 ### Test Results
 
-- **759 tests, 2127 assertions** (all passing)
+- **774 tests, 2157 assertions** (all passing)
 - Full sharding support verified
 - Concurrency tests updated for JSONL behavior
 - Count fast-path tests added
+- Configuration system tests added (15 tests)
 
 ---
 

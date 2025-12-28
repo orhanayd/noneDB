@@ -128,17 +128,19 @@ class ConcurrencyTest extends noneDBTestCase
     {
         $dbName = 'multi_instance_test';
 
-        // Create multiple instances and set them to use test directory
-        $db1 = new \noneDB();
-        $db2 = new \noneDB();
-        $db3 = new \noneDB();
+        // Test config for creating new instances
+        $testConfig = [
+            'secretKey' => 'test_secret_key_for_unit_tests',
+            'dbDir' => TEST_DB_DIR,
+            'autoCreateDB' => true
+        ];
+
+        // Create multiple instances with test config
+        $db1 = new \noneDB($testConfig);
+        $db2 = new \noneDB($testConfig);
+        $db3 = new \noneDB($testConfig);
 
         $reflector = new \ReflectionClass(\noneDB::class);
-        $property = $reflector->getProperty('dbDir');
-        $property->setAccessible(true);
-        $property->setValue($db1, TEST_DB_DIR);
-        $property->setValue($db2, TEST_DB_DIR);
-        $property->setValue($db3, TEST_DB_DIR);
 
         // Insert from instance 1
         $db1->insert($dbName, ['from' => 'db1']);

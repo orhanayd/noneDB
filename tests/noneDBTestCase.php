@@ -40,11 +40,18 @@ abstract class noneDBTestCase extends TestCase
         // Clean test directory before each test
         $this->cleanTestDirectory();
 
-        // Create fresh noneDB instance
-        $this->noneDB = new \noneDB();
+        // Clear config cache to ensure fresh config loading
+        \noneDB::clearConfigCache();
 
-        // Set noneDB to use test directory
-        $this->setPrivateProperty('dbDir', $this->testDbDir);
+        // Create fresh noneDB instance with test config
+        $this->noneDB = new \noneDB([
+            'secretKey' => 'test_secret_key_for_unit_tests',
+            'dbDir' => $this->testDbDir,
+            'autoCreateDB' => true,
+            'shardingEnabled' => true,
+            'shardSize' => 10000,
+            'autoMigrate' => true
+        ]);
 
         // Buffer is enabled by default (v2.3.0+)
         // getDatabaseContents() flushes buffer automatically for consistency
@@ -71,6 +78,9 @@ abstract class noneDBTestCase extends TestCase
 
         // Clear noneDB's static cache to prevent cross-test pollution
         \noneDB::clearStaticCache();
+
+        // Clear config cache for fresh config on each test
+        \noneDB::clearConfigCache();
 
         if (!file_exists($this->testDbDir)) {
             mkdir($this->testDbDir, 0777, true);
@@ -268,11 +278,13 @@ abstract class noneDBTestCase extends TestCase
      */
     protected function createTestInstance(): \noneDB
     {
-        $db = new \noneDB();
-        $reflector = new ReflectionClass(\noneDB::class);
-        $property = $reflector->getProperty('dbDir');
-        $property->setAccessible(true);
-        $property->setValue($db, $this->testDbDir);
-        return $db;
+        return new \noneDB([
+            'secretKey' => 'test_secret_key_for_unit_tests',
+            'dbDir' => $this->testDbDir,
+            'autoCreateDB' => true,
+            'shardingEnabled' => true,
+            'shardSize' => 10000,
+            'autoMigrate' => true
+        ]);
     }
 }
