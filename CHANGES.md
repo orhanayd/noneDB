@@ -1,6 +1,6 @@
 # noneDB Changelog
 
-## v3.1.0 (2025-12-28)
+## v3.0.0 (2025-12-28)
 
 ### Major: Pure JSONL Storage Engine + Maximum Performance Optimizations
 
@@ -195,13 +195,26 @@ $db->query("users")->where(['active' => true])->limit(10)->get();
 
 ### Performance Results
 
-| Operation | v2.x | v3.1 | Improvement |
+| Operation | v2.x | v3.0 | Improvement |
 |-----------|------|------|-------------|
-| insert 50K | 1.3s | 337ms | **4x faster** |
-| insert 100K | 2.8s | 701ms | **4x faster** |
-| find(key) 50K | 223ms | 47ms | **5x faster** |
-| find(key) 100K | 437ms | 84ms | **5x faster** |
-| find(key) 500K | 2.1s | 391ms | **5x faster** |
+| insert 50K | 1.3s | 723ms | **2x faster** |
+| insert 100K | 2.8s | 1.8s | **1.5x faster** |
+| find(all) 100K | 1.1s | 568ms | **2x faster** |
+| find(filter) 100K | 854ms | 463ms | **2x faster** |
+| update 100K | 1.1s | 362ms | **3x faster** |
+
+### SleekDB Comparison (100K Records)
+
+| Operation | noneDB | SleekDB | Winner |
+|-----------|--------|---------|--------|
+| Bulk Insert | 1.52s | 26.26s | **noneDB 17x** |
+| Find All | 244ms | 14.08s | **noneDB 58x** |
+| Find Filter | 252ms | 14.51s | **noneDB 58x** |
+| Update | 294ms | 21.44s | **noneDB 73x** |
+| Delete | 343ms | 16.07s | **noneDB 47x** |
+| Complex Query | 421ms | 14.76s | **noneDB 35x** |
+| Find by Key | 249ms | <1ms | SleekDB |
+| Count | 226ms | 35ms | SleekDB |
 
 ### Breaking Changes
 

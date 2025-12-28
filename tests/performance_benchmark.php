@@ -43,7 +43,7 @@ function generateRecord($i) {
 }
 
 echo blue("╔════════════════════════════════════════════════════════════════════╗\n");
-echo blue("║              noneDB Performance Benchmark v3.1                     ║\n");
+echo blue("║              noneDB Performance Benchmark v3.0                     ║\n");
 echo blue("║    JSONL Engine + Static Cache + Batch Read + Single-Pass Filter  ║\n");
 echo blue("╚════════════════════════════════════════════════════════════════════╝\n\n");
 

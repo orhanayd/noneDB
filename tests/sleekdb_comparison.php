@@ -61,11 +61,11 @@ function ratio($nonedb, $sleekdb) {
 }
 
 echo blue("╔══════════════════════════════════════════════════════════════════════════╗\n");
-echo blue("║           noneDB v3.1 vs SleekDB Comprehensive Benchmark                 ║\n");
+echo blue("║           noneDB v3.0 vs SleekDB Comprehensive Benchmark                 ║\n");
 echo blue("╚══════════════════════════════════════════════════════════════════════════╝\n\n");
 
 echo "PHP Version: " . PHP_VERSION . "\n";
-echo "noneDB: v3.1.0 (JSONL + Static Cache + Batch Read)\n";
+echo "noneDB: v3.0.0 (JSONL + Static Cache + Batch Read)\n";
 echo "SleekDB: v2.x\n\n";
 
 $results = [];

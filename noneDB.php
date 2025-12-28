@@ -57,7 +57,7 @@ class noneDB {
     private $jsonlFormatCache=[];             // Cache format detection per DB
     private $jsonlGarbageThreshold=0.3;       // Trigger compaction when garbage > 30%
 
-    // Static caches for cross-instance sharing - v3.1.0
+    // Static caches for cross-instance sharing - v3.0.0
     private static $staticIndexCache=[];      // Shared index cache across instances
     private static $staticShardedCache=[];    // Shared isSharded results
     private static $staticMetaCache=[];       // Shared meta data cache
@@ -1041,7 +1041,7 @@ class noneDB {
     }
 
     /**
-     * Batch read multiple JSONL records efficiently - v3.1.0
+     * Batch read multiple JSONL records efficiently - v3.0.0
      * Opens file once and uses buffered reading for better performance
      * @param string $path File path
      * @param array $offsets Array of [key => [offset, length], ...]
@@ -1155,7 +1155,7 @@ class noneDB {
             return $record !== null ? [$record] : [];
         }
 
-        // Multiple keys: use batch read for efficiency (v3.1.0)
+        // Multiple keys: use batch read for efficiency (v3.0.0)
         $records = $this->readJsonlRecordsBatch($path, $offsets);
 
         // Maintain original key order
@@ -1178,7 +1178,7 @@ class noneDB {
      * @return array
      */
     private function readAllJsonl($path, $index = null){
-        // If index provided, use batch read for better performance (v3.1.0)
+        // If index provided, use batch read for better performance (v3.0.0)
         if($index !== null && isset($index['o'])){
             // Use batch read for efficiency (single file open, buffered reads)
             $records = $this->readJsonlRecordsBatch($path, $index['o']);
@@ -4018,7 +4018,7 @@ class noneDBQuery {
     }
 
     // ==========================================
-    // FILTER HELPER METHODS (v3.1.0)
+    // FILTER HELPER METHODS (v3.0.0)
     // ==========================================
 
     /**
@@ -4413,7 +4413,7 @@ class noneDBQuery {
             if ($results === false) return [];
         }
 
-        // 2-9. Apply all advanced filters in single pass (v3.1.0 optimization)
+        // 2-9. Apply all advanced filters in single pass (v3.0.0 optimization)
         // Replaces multiple array_filter calls with one pass for better performance
         if ($this->hasAdvancedFilters()) {
             $filtered = [];
