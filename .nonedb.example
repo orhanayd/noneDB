@@ -1,0 +1,11 @@
+{
+    "secretKey": "CHANGE_THIS_TO_A_SECURE_RANDOM_STRING",
+    "dbDir": "./db/",
+    "autoCreateDB": true,
+    "shardingEnabled": true,
+    "shardSize": 10000,
+    "autoMigrate": true,
+    "autoCompactThreshold": 0.3,
+    "lockTimeout": 5,
+    "lockRetryDelay": 10000
+}

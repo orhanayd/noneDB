@@ -40,11 +40,21 @@ abstract class noneDBTestCase extends TestCase
         // Clean test directory before each test
         $this->cleanTestDirectory();
 
-        // Create fresh noneDB instance
-        $this->noneDB = new \noneDB();
+        // Clear config cache to ensure fresh config loading
+        \noneDB::clearConfigCache();
 
-        // Set noneDB to use test directory
-        $this->setPrivateProperty('dbDir', $this->testDbDir);
+        // Create fresh noneDB instance with test config
+        $this->noneDB = new \noneDB([
+            'secretKey' => 'test_secret_key_for_unit_tests',
+            'dbDir' => $this->testDbDir,
+            'autoCreateDB' => true,
+            'shardingEnabled' => true,
+            'shardSize' => 10000,
+            'autoMigrate' => true
+        ]);
+
+        // Buffer is enabled by default (v2.3.0+)
+        // getDatabaseContents() flushes buffer automatically for consistency
     }
 
     /**
@@ -65,6 +75,12 @@ abstract class noneDBTestCase extends TestCase
     {
         // Clear PHP's file stat cache
         clearstatcache(true);
+
+        // Clear noneDB's static cache to prevent cross-test pollution
+        \noneDB::clearStaticCache();
+
+        // Clear config cache for fresh config on each test
+        \noneDB::clearConfigCache();
 
         if (!file_exists($this->testDbDir)) {
             mkdir($this->testDbDir, 0777, true);
@@ -193,12 +209,17 @@ abstract class noneDBTestCase extends TestCase
 
     /**
      * Get database contents directly from file
+     * Flushes any buffered data first to ensure consistency
+     * v3.0: JSONL-only format - uses .jidx index to determine valid records
      *
      * @param string $dbName Database name
-     * @return array|null
+     * @return array|null Returns normalized format: ['data' => [...records...]]
      */
     protected function getDatabaseContents(string $dbName): ?array
     {
+        // Flush buffer first to ensure all data is written to file
+        $this->noneDB->flush($dbName);
+
         $filePath = $this->getDbFilePath($dbName);
 
         if (!file_exists($filePath)) {
@@ -206,7 +227,48 @@ abstract class noneDBTestCase extends TestCase
         }
 
         $contents = file_get_contents($filePath);
-        return json_decode($contents, true);
+        $indexPath = $filePath . '.jidx';
+
+        // JSONL format with index - only return records that exist in index
+        $records = [];
+
+        if (file_exists($indexPath)) {
+            $index = json_decode(file_get_contents($indexPath), true);
+            if ($index !== null && isset($index['o'])) {
+                // Read all lines and filter by index
+                $lines = explode("\n", trim($contents));
+                foreach ($lines as $line) {
+                    $line = trim($line);
+                    if (empty($line)) continue;
+                    $record = json_decode($line, true);
+                    if ($record !== null && isset($record['key'])) {
+                        $key = $record['key'];
+                        // Only include records that exist in index (not deleted)
+                        if (isset($index['o'][$key])) {
+                            unset($record['key']);
+                            $records[$key] = $record;
+                        }
+                    }
+                }
+            }
+        } else {
+            // No index file - read all records (legacy or new DB)
+            $lines = explode("\n", trim($contents));
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if (empty($line)) continue;
+                $record = json_decode($line, true);
+                if ($record !== null) {
+                    $key = $record['key'] ?? count($records);
+                    unset($record['key']);
+                    $records[$key] = $record;
+                }
+            }
+        }
+
+        // Sort by key to maintain order
+        ksort($records);
+        return ['data' => array_values($records)];
     }
 
     /**
@@ -216,11 +278,13 @@ abstract class noneDBTestCase extends TestCase
      */
     protected function createTestInstance(): \noneDB
     {
-        $db = new \noneDB();
-        $reflector = new ReflectionClass(\noneDB::class);
-        $property = $reflector->getProperty('dbDir');
-        $property->setAccessible(true);
-        $property->setValue($db, $this->testDbDir);
-        return $db;
+        return new \noneDB([
+            'secretKey' => 'test_secret_key_for_unit_tests',
+            'dbDir' => $this->testDbDir,
+            'autoCreateDB' => true,
+            'shardingEnabled' => true,
+            'shardSize' => 10000,
+            'autoMigrate' => true
+        ]);
     }
 }

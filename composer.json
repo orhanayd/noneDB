@@ -14,7 +14,8 @@
         "php": ">=7.4"
     },
     "require-dev": {
-        "phpunit/phpunit": "^9.6"
+        "phpunit/phpunit": "^9.6",
+        "rakibtg/sleekdb": "^2.15"
     },
     "autoload": {
         "classmap": ["noneDB.php"]

@@ -43,8 +43,8 @@ function generateRecord($i) {
 }
 
 echo blue("╔════════════════════════════════════════════════════════════════════╗\n");
-echo blue("║              noneDB Performance Benchmark v2.2                     ║\n");
-echo blue("║         Atomic File Locking - Thread-Safe Operations               ║\n");
+echo blue("║              noneDB Performance Benchmark v3.0                     ║\n");
+echo blue("║    JSONL Engine + Static Cache + Batch Read + Single-Pass Filter  ║\n");
 echo blue("╚════════════════════════════════════════════════════════════════════╝\n\n");
 
 echo "PHP Version: " . PHP_VERSION . "\n";
@@ -64,9 +64,13 @@ foreach ($sizes as $size) {
     echo yellow("  Testing with " . number_format($size) . " records\n");
     echo yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    // Clean up
-    $files = glob(__DIR__ . '/../db/*' . $dbName . '*');
-    foreach ($files as $f) @unlink($f);
+    // Clean up ENTIRE db folder for fair benchmarking
+    $files = glob(__DIR__ . '/../db/*');
+    foreach ($files as $f) {
+        if (is_file($f)) @unlink($f);
+    }
+    noneDB::clearStaticCache();  // Clear static cache for accurate benchmarks
+    clearstatcache(true);
 
     // ===== WRITE OPERATIONS =====
     echo "\n" . cyan("  Write Operations:\n");
@@ -100,9 +104,13 @@ foreach ($sizes as $size) {
     $results['write']['delete'][$size] = $deleteTime;
     echo "    delete():     " . green(formatTime($deleteTime)) . "\n";
 
-    // Re-insert for read tests
-    $files = glob(__DIR__ . '/../db/*' . $dbName . '*');
-    foreach ($files as $f) @unlink($f);
+    // Re-insert for read tests (clean entire db folder)
+    $files = glob(__DIR__ . '/../db/*');
+    foreach ($files as $f) {
+        if (is_file($f)) @unlink($f);
+    }
+    noneDB::clearStaticCache();
+    clearstatcache(true);
     $db->insert($dbName, $data);
 
     // ===== READ OPERATIONS =====

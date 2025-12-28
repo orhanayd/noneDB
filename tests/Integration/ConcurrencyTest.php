@@ -102,16 +102,19 @@ class ConcurrencyTest extends noneDBTestCase
 
         // Insert initial data
         $this->noneDB->insert($dbName, ['value' => 'initial']);
+        $this->noneDB->flush($dbName);
 
         // Read to populate stat cache
         $result1 = $this->noneDB->find($dbName, 0);
+        $this->assertEquals('initial', $result1[0]['value']);
 
-        // Modify directly (simulating external modification)
-        $filePath = $this->getDbFilePath($dbName);
-        $newContent = json_encode(['data' => [['value' => 'modified']]]);
-        file_put_contents($filePath, $newContent, LOCK_EX);
+        // Update using API (direct file modification not supported in JSONL)
+        $this->noneDB->update($dbName, [
+            ['value' => 'initial'],
+            ['set' => ['value' => 'modified']]
+        ]);
 
-        // Read again - should get updated data due to clearstatcache
+        // Read again - should get updated data
         $result2 = $this->noneDB->find($dbName, 0);
 
         $this->assertEquals('modified', $result2[0]['value']);
@@ -119,34 +122,44 @@ class ConcurrencyTest extends noneDBTestCase
 
     /**
      * @test
+     * v3.0: Multiple instances require flush/clear to sync JSONL index caches
      */
     public function multipleInstancesConcurrent(): void
     {
         $dbName = 'multi_instance_test';
 
-        // Create multiple instances and set them to use test directory
-        $db1 = new \noneDB();
-        $db2 = new \noneDB();
-        $db3 = new \noneDB();
+        // Test config for creating new instances
+        $testConfig = [
+            'secretKey' => 'test_secret_key_for_unit_tests',
+            'dbDir' => TEST_DB_DIR,
+            'autoCreateDB' => true
+        ];
+
+        // Create multiple instances with test config
+        $db1 = new \noneDB($testConfig);
+        $db2 = new \noneDB($testConfig);
+        $db3 = new \noneDB($testConfig);
 
         $reflector = new \ReflectionClass(\noneDB::class);
-        $property = $reflector->getProperty('dbDir');
-        $property->setAccessible(true);
-        $property->setValue($db1, TEST_DB_DIR);
-        $property->setValue($db2, TEST_DB_DIR);
-        $property->setValue($db3, TEST_DB_DIR);
 
         // Insert from instance 1
         $db1->insert($dbName, ['from' => 'db1']);
+        $db1->flush($dbName);  // Flush buffer to file
 
-        // Read from instance 2
+        // Read from instance 2 - fresh instance reads from file
         $result2 = $db2->find($dbName, 0);
         $this->assertCount(1, $result2);
 
         // Insert from instance 3
         $db3->insert($dbName, ['from' => 'db3']);
+        $db3->flush($dbName);  // Flush buffer to file
 
-        // Read from instance 1
+        // Clear db1's index cache to force re-read
+        $cacheProperty = $reflector->getProperty('indexCache');
+        $cacheProperty->setAccessible(true);
+        $cacheProperty->setValue($db1, []);
+
+        // Read from instance 1 - fresh read with cleared cache
         $result1 = $db1->find($dbName, 0);
         $this->assertCount(2, $result1);
     }
