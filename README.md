@@ -1011,120 +1011,131 @@ Tested on PHP 8.2, macOS (Apple Silicon M-series) - **v3.1 JSONL Storage Engine*
 
 ### Why Choose noneDB?
 
-noneDB v3.0 excels in **bulk operations** and **large datasets**:
+noneDB v3.1 excels in **bulk operations** and **large datasets**:
 
 | Strength | Performance |
 |----------|-------------|
-| 🎯 **O(1) Key Lookup** | **~9ms constant** for sharded DBs (v3.0 JSONL byte-offset index) |
-| 🚀 **Bulk Insert** | **20-25x faster** than SleekDB |
-| 🔍 **Find All / Filters** | **56-68x faster** at scale |
-| ✏️ **Update Operations** | **56x faster** on large datasets |
-| 🗑️ **Delete Operations** | **48x faster** on large datasets |
+| 🚀 **Bulk Insert** | **18x faster** than SleekDB |
+| 🔍 **Find All** | **60x faster** at scale |
+| 🎯 **Filter Queries** | **62x faster** at scale |
+| ✏️ **Update Operations** | **69x faster** on large datasets |
+| 🗑️ **Delete Operations** | **52x faster** on large datasets |
 | 📦 **Large Datasets** | Handles 500K+ records with auto-sharding |
 | 🔒 **Thread Safety** | Atomic file locking for concurrent access |
-| ⚡ **Write Buffer** | Append-only inserts, no full-file rewrites |
+| ⚡ **Static Cache** | Cross-instance cache sharing |
 
-**Best for:** All workloads - key lookups, bulk operations, analytics, batch processing
+**Best for:** Bulk operations, analytics, batch processing, filter-heavy workloads
 
 ### When to Consider SleekDB?
 
 | Scenario | SleekDB Advantage |
 |----------|-------------------|
-| 🎯 **High-frequency key lookups** | <1ms vs ~9ms (when you need 1000+ lookups/sec) |
-| 💾 **Very low memory** | 8x less RAM (embedded systems, shared hosting) |
+| 🎯 **High-frequency key lookups** | <1ms vs ~100ms (file-per-record architecture) |
+| 📊 **Count operations** | 6x faster (uses file count) |
+| 💾 **Very low memory** | Lower RAM usage |
 
-> **Note:** noneDB's ~9ms key lookup is acceptable for most applications. You gain 20-60x performance on bulk operations.
-
----
-
-*Detailed benchmark comparisons below.*
+> **Note:** SleekDB stores each record as a separate file, making single-record lookups instant but bulk operations slow.
 
 ---
-
-### Detailed Comparison
-
-Performance comparison with [SleekDB](https://github.com/SleekDB/SleekDB) v2.15 (PHP flat-file database).
 
 ### Architectural Differences
 
 | Feature | SleekDB | noneDB |
 |---------|---------|--------|
-| **Storage** | One JSON file per record | Single file (sharded) |
-| **ID Access** | Direct file read | Shard lookup |
-| **Bulk Read** | Traverse all files | Single decode |
-| **Sharding** | None | Automatic (100K+) |
-| **Cache** | Built-in | Hash/Meta cache |
-| **Buffer** | None | Write buffer |
-| **Indexing** | None | Primary key index |
+| **Storage** | One JSON file per record | JSONL + byte-offset index |
+| **ID Access** | Direct file read (O(1)) | Index lookup + seek |
+| **Bulk Read** | Traverse all files | Single file read |
+| **Sharding** | None | Automatic (10K+) |
+| **Cache** | Per-query | Static cross-instance |
+| **Indexing** | None | Byte-offset (.jidx) |
 
-### Benchmark Results (100K Records)
+---
+
+### Benchmark Results (v3.1)
 
 #### Bulk Insert
-| Records | SleekDB | noneDB | Winner |
-|---------|---------|--------|--------|
-| 100 | 20 ms | 5 ms | **noneDB 4x** |
-| 1K | 162 ms | 12 ms | **noneDB 14x** |
-| 10K | 1.88 s | 86 ms | **noneDB 22x** |
-| 50K | 12.84 s | 517 ms | **noneDB 25x** |
-| 100K | 25.67 s | 1.26 s | **noneDB 20x** |
+| Records | noneDB | SleekDB | Winner |
+|---------|--------|---------|--------|
+| 100 | 5ms | 19ms | **noneDB 4x** |
+| 1K | 10ms | 161ms | **noneDB 16x** |
+| 10K | 132ms | 1.74s | **noneDB 13x** |
+| 50K | 691ms | 12.15s | **noneDB 18x** |
+| 100K | 1.49s | 26.66s | **noneDB 18x** |
 
 #### Find All Records
-| Records | SleekDB | noneDB | Winner |
-|---------|---------|--------|--------|
-| 100 | 5 ms | <1 ms | **noneDB 5x** |
-| 1K | 32 ms | 2 ms | **noneDB 16x** |
-| 10K | 347 ms | 22 ms | **noneDB 16x** |
-| 50K | 7.41 s | 109 ms | **noneDB 68x** |
-| 100K | 14.15 s | 251 ms | **noneDB 56x** |
+| Records | noneDB | SleekDB | Winner |
+|---------|--------|---------|--------|
+| 100 | 4ms | 8ms | **noneDB 2x** |
+| 1K | 7ms | 33ms | **noneDB 5x** |
+| 10K | 23ms | 346ms | **noneDB 15x** |
+| 50K | 113ms | 5.84s | **noneDB 52x** |
+| 100K | 249ms | 14.87s | **noneDB 60x** |
 
-#### Find by ID/Key (v3.0 O(1) Lookup)
-| Records | SleekDB | noneDB | Winner |
-|---------|---------|--------|--------|
-| 100 | <1 ms | 0.04 ms | Tie |
-| 1K | <1 ms | 0.03 ms | Tie |
-| 10K | <1 ms | ~9 ms | **SleekDB** |
-| 50K | <1 ms | ~9 ms | **SleekDB** |
-| 100K | <1 ms | ~9 ms | **SleekDB** |
+#### Find by Key (Single Record)
+| Records | noneDB | SleekDB | Winner |
+|---------|--------|---------|--------|
+| 100 | 3ms | <1ms | SleekDB |
+| 1K | 3ms | <1ms | SleekDB |
+| 10K | 43ms | <1ms | **SleekDB** |
+| 50K | 138ms | <1ms | **SleekDB** |
+| 100K | 275ms | <1ms | **SleekDB** |
 
-> **v3.0:** noneDB uses O(1) byte-offset index. The ~9ms overhead is shard metadata + index lookup.
+> **Note:** SleekDB's file-per-record design gives O(1) key lookup. noneDB must load shard index first.
 
-#### Sequential Insert (100 records on existing DB)
-| Records | SleekDB | noneDB (buffer) | Winner |
-|---------|---------|-----------------|--------|
-| 100 | 25 ms | 13 ms | **noneDB 2x** |
-| 1K | 22 ms | 15 ms | **noneDB 1.5x** |
-| 10K | 24 ms | 39 ms | SleekDB 1.6x |
-| 50K | 36 ms | 141 ms | SleekDB 4x |
-| 100K | 36 ms | 22 ms | **noneDB 1.6x** |
+#### Find with Filter
+| Records | noneDB | SleekDB | Winner |
+|---------|--------|---------|--------|
+| 100 | <1ms | 7ms | **noneDB 9x** |
+| 1K | 4ms | 35ms | **noneDB 9x** |
+| 10K | 24ms | 373ms | **noneDB 16x** |
+| 50K | 123ms | 4.84s | **noneDB 39x** |
+| 100K | 253ms | 15.58s | **noneDB 62x** |
 
-#### Update & Delete (100K Records)
-| Operation | SleekDB | noneDB | Winner |
-|-----------|---------|--------|--------|
-| Update | 17.44 s | 309 ms | **noneDB 56x** |
-| Delete | 15.57 s | 325 ms | **noneDB 48x** |
-| Count | 37 ms | 222 ms | SleekDB 6x |
+#### Update Operations
+| Records | noneDB | SleekDB | Winner |
+|---------|--------|---------|--------|
+| 100 | 8ms | 13ms | **noneDB 2x** |
+| 1K | 68ms | 67ms | ~Tie |
+| 10K | 29ms | 771ms | **noneDB 27x** |
+| 50K | 158ms | 4.9s | **noneDB 31x** |
+| 100K | 301ms | 20.81s | **noneDB 69x** |
 
-#### Memory Usage (Bulk Insert)
-| Records | SleekDB | noneDB | Winner |
-|---------|---------|--------|--------|
-| 10K | 4 MB | 8 MB | SleekDB 2x |
-| 50K | 18 MB | 34 MB | SleekDB 2x |
-| 100K | 16 MB | 134 MB | **SleekDB 8x** |
+#### Delete Operations
+| Records | noneDB | SleekDB | Winner |
+|---------|--------|---------|--------|
+| 100 | 8ms | 9ms | ~Tie |
+| 1K | 66ms | 47ms | SleekDB 1.4x |
+| 10K | 31ms | 588ms | **noneDB 19x** |
+| 50K | 160ms | 3.52s | **noneDB 22x** |
+| 100K | 328ms | 16.88s | **noneDB 52x** |
 
-### Summary (v3.0)
+#### Complex Query (where + sort + limit)
+| Records | noneDB | SleekDB | Winner |
+|---------|--------|---------|--------|
+| 100 | <1ms | 7ms | **noneDB 10x** |
+| 1K | 4ms | 37ms | **noneDB 10x** |
+| 10K | 27ms | 375ms | **noneDB 14x** |
+| 50K | 192ms | 2.13s | **noneDB 11x** |
+| 100K | 342ms | 13.21s | **noneDB 39x** |
+
+---
+
+### Summary (v3.1)
 
 | Use Case | Winner | Advantage |
 |----------|--------|-----------|
-| **Bulk Insert** | **noneDB** | 20-25x faster |
-| **Find All** | **noneDB** | 56x faster |
-| **Update/Delete** | **noneDB** | 48-56x faster |
-| **Filter Queries** | **noneDB** | 61x faster |
-| **ID-based lookup** | **SleekDB** | ~9x faster (<1ms vs ~9ms) |
-| **Memory usage** | **SleekDB** | 8x less |
+| **Bulk Insert** | **noneDB** | 13-18x faster |
+| **Find All** | **noneDB** | 52-60x faster |
+| **Find with Filter** | **noneDB** | 39-62x faster |
+| **Update** | **noneDB** | 27-69x faster |
+| **Delete** | **noneDB** | 19-52x faster |
+| **Complex Query** | **noneDB** | 10-39x faster |
+| **Find by Key** | **SleekDB** | O(1) file access |
+| **Count** | **SleekDB** | ~6x faster |
 
-> **Choose noneDB** for: Bulk operations, large datasets, filter queries, update/delete heavy workloads
+> **Choose noneDB** for: Bulk operations, large datasets, filter queries, update/delete workloads, complex queries
 >
-> **Choose SleekDB** for: High-frequency single-record lookups, memory-constrained environments
+> **Choose SleekDB** for: High-frequency single-record lookups by ID, count-heavy operations
 
 ---
 
