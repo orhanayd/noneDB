@@ -81,32 +81,37 @@ class DeleteTest extends noneDBTestCase
 
     /**
      * @test
+     * v3.0: Delete removes record completely (no null placeholder)
      */
-    public function deleteSetsRecordToNull(): void
+    public function deleteRemovesRecordCompletely(): void
     {
         $this->noneDB->delete($this->testDbName, ['username' => 'john']);
 
-        $contents = $this->getDatabaseContents($this->testDbName);
+        // Deleted record cannot be found
+        $deleted = $this->noneDB->find($this->testDbName, ['username' => 'john']);
+        $this->assertCount(0, $deleted);
 
-        $this->assertNull($contents['data'][0]);
+        // Other records still exist
+        $remaining = $this->noneDB->find($this->testDbName, 0);
+        $this->assertCount(2, $remaining);
     }
 
     /**
      * @test
+     * v3.0: Delete removes record, other records remain accessible
      */
-    public function deletePreservesArrayIndices(): void
+    public function deleteRemovesRecordKeepsOthers(): void
     {
         $this->noneDB->delete($this->testDbName, ['username' => 'john']);
 
-        $contents = $this->getDatabaseContents($this->testDbName);
+        // jane and bob still accessible via public API
+        $jane = $this->noneDB->find($this->testDbName, ['username' => 'jane']);
+        $bob = $this->noneDB->find($this->testDbName, ['username' => 'bob']);
 
-        // Array should still have 3 elements
-        $this->assertCount(3, $contents['data']);
-
-        // Indices preserved
-        $this->assertNull($contents['data'][0]);
-        $this->assertEquals('jane', $contents['data'][1]['username']);
-        $this->assertEquals('bob', $contents['data'][2]['username']);
+        $this->assertCount(1, $jane);
+        $this->assertCount(1, $bob);
+        $this->assertEquals('jane', $jane[0]['username']);
+        $this->assertEquals('bob', $bob[0]['username']);
     }
 
     /**
@@ -278,18 +283,26 @@ class DeleteTest extends noneDBTestCase
 
     /**
      * @test
+     * v3.0: Delete then insert works correctly
      */
-    public function deleteThenInsertMaintainsOrder(): void
+    public function deleteThenInsertWorks(): void
     {
         $this->noneDB->delete($this->testDbName, ['username' => 'jane']);
         $this->noneDB->insert($this->testDbName, ['username' => 'newuser']);
 
-        $contents = $this->getDatabaseContents($this->testDbName);
+        // jane is deleted, cannot be found
+        $jane = $this->noneDB->find($this->testDbName, ['username' => 'jane']);
+        $this->assertCount(0, $jane);
 
-        // jane was at index 1, now null
-        $this->assertNull($contents['data'][1]);
+        // newuser is inserted and can be found
+        $newuser = $this->noneDB->find($this->testDbName, ['username' => 'newuser']);
+        $this->assertCount(1, $newuser);
+        $this->assertEquals('newuser', $newuser[0]['username']);
 
-        // new user is appended at the end
-        $this->assertEquals('newuser', $contents['data'][3]['username']);
+        // Original records (john, bob) are still there
+        $john = $this->noneDB->find($this->testDbName, ['username' => 'john']);
+        $this->assertCount(1, $john);
+        $bob = $this->noneDB->find($this->testDbName, ['username' => 'bob']);
+        $this->assertCount(1, $bob);
     }
 }

@@ -1,5 +1,135 @@
 # noneDB Changelog
 
+## v3.0.0 (2025-12-28)
+
+### Major: Pure JSONL Storage Engine (Breaking Change)
+
+This release completes the migration to a **pure JSONL storage format** with O(1) key-based lookups. All databases are now stored in JSONL format with byte-offset indexing.
+
+> **BREAKING CHANGE:** V2 format (`{"data": [...]}`) is no longer supported. Existing databases will be automatically migrated to JSONL format on first access.
+
+#### Storage Format Changes
+
+```
+Before v3.0 (V2 Format):
+┌─────────────────────────────────────────┐
+│ hash-dbname.nonedb                      │
+│ {"data": [{"name":"John"}, null, ...]}  │
+└─────────────────────────────────────────┘
+
+After v3.0 (JSONL Format):
+┌─────────────────────────────────────────┐
+│ hash-dbname.nonedb                      │
+│ {"key":0,"name":"John"}                 │
+│ {"key":1,"name":"Jane"}                 │
+│ ...                                     │
+├─────────────────────────────────────────┤
+│ hash-dbname.nonedb.jidx                 │
+│ {"v":3,"n":2,"d":0,"o":{"0":[0,26],...}}│
+└─────────────────────────────────────────┘
+```
+
+#### Index File Structure (.jidx)
+
+```json
+{
+  "v": 3,
+  "format": "jsonl",
+  "created": 1735344000,
+  "n": 100,
+  "d": 5,
+  "o": {
+    "0": [0, 45],
+    "1": [46, 52]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `v` | Index version (3) |
+| `format` | Storage format ("jsonl") |
+| `created` | Creation timestamp |
+| `n` | Next key counter |
+| `d` | Dirty count (deleted records pending compaction) |
+| `o` | Offset map: `{key: [byteOffset, length]}` |
+
+#### Performance Improvements
+
+| Operation | V2 Format | V3 JSONL |
+|-----------|-----------|----------|
+| Find by key | O(n) scan | **O(1) lookup** |
+| Insert | O(n) read+write | **O(1) append** |
+| Update | O(n) read+write | **O(1) in-place** |
+| Delete | O(n) read+write | **O(1) mark** |
+
+#### Delete Behavior Change
+
+**Before v3.0 (V2):** Deleted records became `null` placeholders in the array, requiring `compact()` to reclaim space.
+
+**After v3.0 (JSONL):** Deleted records are immediately removed from the index. The record data remains in the file until auto-compaction triggers (when dirty > 30% of total records).
+
+```php
+// Old behavior (v2)
+$db->delete("users", ["id" => 5]);
+// Data: [rec0, rec1, null, rec3, ...]  // null placeholder
+
+// New behavior (v3)
+$db->delete("users", ["id" => 5]);
+// Data file unchanged, index entry removed
+// find() returns no result for deleted record
+```
+
+#### Auto-Compaction
+
+JSONL format includes automatic compaction:
+- Triggers when dirty records exceed 30% of total
+- Rewrites file removing stale data
+- Updates all byte offsets in index
+- No manual intervention needed
+
+```php
+// Manual compaction still available
+$result = $db->compact("users");
+// ["ok" => true, "freedSlots" => 15, "totalRecords" => 100]
+```
+
+#### Sharding JSONL Support
+
+Sharded databases now use JSONL format for each shard:
+```
+hash-dbname_s0.nonedb       # Shard 0 data (JSONL)
+hash-dbname_s0.nonedb.jidx  # Shard 0 index
+hash-dbname_s1.nonedb       # Shard 1 data (JSONL)
+hash-dbname_s1.nonedb.jidx  # Shard 1 index
+hash-dbname.nonedb.meta     # Shard metadata
+```
+
+### Breaking Changes
+
+1. **V2 format no longer supported** - Databases are auto-migrated on first access
+2. **Delete no longer creates null placeholders** - Records removed from index immediately
+3. **Index file (.jidx) required** - Each database/shard needs its index file
+4. **compact() behavior changed** - Now rewrites JSONL file, not JSON array
+
+### Migration
+
+Automatic migration occurs on first database access:
+1. V2 format detected (`{"data": [...]}`)
+2. Records converted to JSONL (one per line)
+3. Byte-offset index created (`.jidx` file)
+4. Original file overwritten with JSONL content
+
+**No manual intervention required.**
+
+### Test Results
+
+- **723 tests, 1924 assertions** (all passing)
+- Full sharding support verified
+- Concurrency tests updated for JSONL behavior
+
+---
+
 ## v2.3.0 (2025-12-28)
 
 ### Major: Write Buffer System + Performance Caching + Index System

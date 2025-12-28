@@ -50,6 +50,12 @@ class noneDB {
     private $indexEnabled=true;               // Enable/disable primary key indexing
     private $indexCache=[];                   // Runtime cache for index data
 
+    // JSONL Storage Engine - v2.4.0
+    private $jsonlEnabled=true;               // Enable JSONL format for new DBs
+    private $jsonlAutoMigrate=true;           // Auto-migrate v2 to JSONL on first access
+    private $jsonlFormatCache=[];             // Cache format detection per DB
+    private $jsonlGarbageThreshold=0.3;       // Trigger compaction when garbage > 30%
+
     /**
      * hash to db name for security
      * Uses instance-level caching to avoid expensive PBKDF2 recomputation
@@ -760,6 +766,590 @@ class noneDB {
     }
 
     // ==========================================
+    // JSONL STORAGE ENGINE (v2.4.0)
+    // O(1) key lookups with byte offset indexing
+    // ==========================================
+
+    /**
+     * Detect if a database file is in JSONL format
+     * JSONL: Each line is a JSON object
+     * v2: {"data": [...]}
+     * @param string $path
+     * @return bool True if JSONL format
+     */
+    private function isJsonlFormat($path){
+        if(!file_exists($path)){
+            return false;
+        }
+
+        // Check cache first
+        if(isset($this->jsonlFormatCache[$path])){
+            return $this->jsonlFormatCache[$path];
+        }
+
+        $handle = fopen($path, 'rb');
+        if($handle === false){
+            return false;
+        }
+
+        // Read first 20 bytes to detect format
+        $header = fread($handle, 20);
+        fclose($handle);
+
+        // v2 format starts with {"data":
+        // JSONL starts with {"key": or just {" for record
+        $isJsonl = (strpos($header, '{"data":') === false && strpos($header, '{"data" :') === false);
+
+        $this->jsonlFormatCache[$path] = $isJsonl;
+        return $isJsonl;
+    }
+
+    /**
+     * Get JSONL index path
+     * @param string $dbname
+     * @param int|null $shardId Null for non-sharded
+     * @return string
+     */
+    private function getJsonlIndexPath($dbname, $shardId = null){
+        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $hash = $this->hashDBName($dbname);
+        if($shardId !== null){
+            return $this->dbDir . $hash . "-" . $dbname . "_s" . $shardId . ".nonedb.jidx";
+        }
+        return $this->dbDir . $hash . "-" . $dbname . ".nonedb.jidx";
+    }
+
+    /**
+     * Read JSONL index (byte offset map)
+     * @param string $dbname
+     * @param int|null $shardId
+     * @return array|null
+     */
+    private function readJsonlIndex($dbname, $shardId = null){
+        $path = $this->getJsonlIndexPath($dbname, $shardId);
+        $cacheKey = $path;
+
+        if(isset($this->indexCache[$cacheKey])){
+            return $this->indexCache[$cacheKey];
+        }
+
+        $index = $this->atomicRead($path, null);
+        if($index !== null){
+            $this->indexCache[$cacheKey] = $index;
+        }
+        return $index;
+    }
+
+    /**
+     * Write JSONL index
+     * @param string $dbname
+     * @param array $index
+     * @param int|null $shardId
+     * @return bool
+     */
+    private function writeJsonlIndex($dbname, $index, $shardId = null){
+        $path = $this->getJsonlIndexPath($dbname, $shardId);
+        $index['updated'] = time();
+        $this->indexCache[$path] = $index;
+        return $this->atomicWrite($path, $index);
+    }
+
+    /**
+     * Migrate v2 format to JSONL format
+     * @param string $path Source file path
+     * @param string $dbname Database name
+     * @param int|null $shardId Shard ID or null for non-sharded
+     * @return bool Success
+     */
+    private function migrateToJsonl($path, $dbname, $shardId = null){
+        if(!file_exists($path)){
+            return false;
+        }
+
+        // Read v2 format
+        $content = file_get_contents($path);
+        if($content === false){
+            return false;
+        }
+
+        $data = json_decode($content, true);
+        if(!isset($data['data']) || !is_array($data['data'])){
+            return false;
+        }
+
+        // Create JSONL format with byte offset index
+        $tempPath = $path . '.jsonl.tmp';
+        $handle = fopen($tempPath, 'wb');
+        if($handle === false){
+            return false;
+        }
+
+        // Acquire exclusive lock
+        if(!flock($handle, LOCK_EX)){
+            fclose($handle);
+            @unlink($tempPath);
+            return false;
+        }
+
+        $index = [
+            'v' => 3,
+            'format' => 'jsonl',
+            'created' => time(),
+            'n' => 0,
+            'd' => 0,
+            'o' => []
+        ];
+
+        $offset = 0;
+        $baseKey = ($shardId !== null) ? ($shardId * $this->shardSize) : 0;
+
+        foreach($data['data'] as $localKey => $record){
+            if($record === null){
+                $index['d']++;
+                continue;
+            }
+
+            $globalKey = $baseKey + $localKey;
+            $record['key'] = $globalKey;
+            $json = json_encode($record, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+            $length = strlen($json) - 1; // Exclude newline
+
+            fwrite($handle, $json);
+
+            $index['o'][$globalKey] = [$offset, $length];
+            $offset += strlen($json);
+            $index['n']++;
+        }
+
+        flock($handle, LOCK_UN);
+        fclose($handle);
+
+        // Atomic swap
+        if(!rename($tempPath, $path)){
+            @unlink($tempPath);
+            return false;
+        }
+
+        // Clear format cache
+        unset($this->jsonlFormatCache[$path]);
+        $this->jsonlFormatCache[$path] = true;
+
+        // Write index
+        $this->writeJsonlIndex($dbname, $index, $shardId);
+
+        return true;
+    }
+
+    /**
+     * Read single record from JSONL file using byte offset
+     * O(1) complexity
+     * @param string $path File path
+     * @param int $offset Byte offset
+     * @param int $length Byte length
+     * @return array|null
+     */
+    private function readJsonlRecord($path, $offset, $length){
+        $handle = fopen($path, 'rb');
+        if($handle === false){
+            return null;
+        }
+
+        // Acquire shared lock
+        if(!flock($handle, LOCK_SH)){
+            fclose($handle);
+            return null;
+        }
+
+        fseek($handle, $offset, SEEK_SET);
+        $json = fread($handle, $length);
+
+        flock($handle, LOCK_UN);
+        fclose($handle);
+
+        if($json === false){
+            return null;
+        }
+
+        return json_decode($json, true);
+    }
+
+    /**
+     * Find by key using JSONL index - O(1)
+     * @param string $dbname
+     * @param int|array $keys
+     * @param int|null $shardId
+     * @return array|null
+     */
+    private function findByKeyJsonl($dbname, $keys, $shardId = null){
+        $index = $this->readJsonlIndex($dbname, $shardId);
+        if($index === null || !isset($index['o'])){
+            return null;
+        }
+
+        if($shardId !== null){
+            $path = $this->getShardPath($dbname, $shardId);
+        } else {
+            $hash = $this->hashDBName($dbname);
+            $path = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+        }
+
+        $keys = is_array($keys) ? $keys : [$keys];
+        $result = [];
+
+        foreach($keys as $key){
+            $key = (int)$key;
+            if(!isset($index['o'][$key])){
+                continue;
+            }
+
+            [$offset, $length] = $index['o'][$key];
+            $record = $this->readJsonlRecord($path, $offset, $length);
+            if($record !== null){
+                $result[] = $record;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Read all records from JSONL file (streaming)
+     * Memory efficient for large files
+     * @param string $path
+     * @param array|null $index Optional index to filter valid records
+     * @return array
+     */
+    private function readAllJsonl($path, $index = null){
+        // If index provided, use byte offsets for accurate reading
+        if($index !== null && isset($index['o'])){
+            $results = [];
+            // Sort by key to maintain order
+            $keys = array_keys($index['o']);
+            sort($keys, SORT_NUMERIC);
+
+            foreach($keys as $key){
+                $location = $index['o'][$key];
+                $record = $this->readJsonlRecord($path, $location[0], $location[1]);
+                if($record !== null){
+                    $results[] = $record;
+                }
+            }
+            return $results;
+        }
+
+        // Fallback: scan all lines (no index)
+        $handle = fopen($path, 'rb');
+        if($handle === false){
+            return [];
+        }
+
+        if(!flock($handle, LOCK_SH)){
+            fclose($handle);
+            return [];
+        }
+
+        $results = [];
+        while(($line = fgets($handle)) !== false){
+            $line = rtrim($line, "\n\r");
+            if(empty($line)){
+                continue;
+            }
+            $record = json_decode($line, true);
+            if($record === null){
+                continue;
+            }
+            $results[] = $record;
+        }
+
+        flock($handle, LOCK_UN);
+        fclose($handle);
+
+        return $results;
+    }
+
+    /**
+     * Append record to JSONL file
+     * @param string $path
+     * @param array $record
+     * @param array &$index Reference to index for updating
+     * @return int|false New key or false on failure
+     */
+    private function appendJsonlRecord($path, $record, &$index){
+        clearstatcache(true, $path);
+        $offset = file_exists($path) ? filesize($path) : 0;
+
+        $key = $index['n'];
+        $record['key'] = $key;
+        $json = json_encode($record, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+        $length = strlen($json) - 1;
+
+        // Append with exclusive lock
+        $result = file_put_contents($path, $json, FILE_APPEND | LOCK_EX);
+        if($result === false){
+            return false;
+        }
+
+        $index['o'][$key] = [$offset, $length];
+        $index['n']++;
+
+        return $key;
+    }
+
+    /**
+     * Bulk append records to JSONL file
+     * @param string $path
+     * @param array $records
+     * @param array &$index Reference to index
+     * @return array Keys of inserted records
+     */
+    private function bulkAppendJsonl($path, $records, &$index){
+        clearstatcache(true, $path);
+        $offset = file_exists($path) ? filesize($path) : 0;
+
+        $buffer = '';
+        $keys = [];
+
+        foreach($records as $record){
+            $key = $index['n'];
+            $record['key'] = $key;
+            $json = json_encode($record, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+            $length = strlen($json) - 1;
+
+            $index['o'][$key] = [$offset, $length];
+            $offset += strlen($json);
+            $index['n']++;
+
+            $buffer .= $json;
+            $keys[] = $key;
+        }
+
+        // Single write for all records
+        file_put_contents($path, $buffer, FILE_APPEND | LOCK_EX);
+
+        return $keys;
+    }
+
+    /**
+     * Update record in JSONL (append new version, mark old as garbage)
+     * @param string $dbname
+     * @param int $key
+     * @param array $newData
+     * @param int|null $shardId
+     * @param bool $skipCompaction Skip auto-compaction (for batch operations)
+     * @return bool
+     */
+    private function updateJsonlRecord($dbname, $key, $newData, $shardId = null, $skipCompaction = false){
+        $index = $this->readJsonlIndex($dbname, $shardId);
+        if($index === null || !isset($index['o'][$key])){
+            return false;
+        }
+
+        if($shardId !== null){
+            $path = $this->getShardPath($dbname, $shardId);
+        } else {
+            $hash = $this->hashDBName($dbname);
+            $path = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+        }
+
+        clearstatcache(true, $path);
+        $offset = filesize($path);
+
+        $newData['key'] = $key;
+        $json = json_encode($newData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+        $length = strlen($json) - 1;
+
+        $result = file_put_contents($path, $json, FILE_APPEND | LOCK_EX);
+        if($result === false){
+            return false;
+        }
+
+        // Old record becomes garbage
+        $index['o'][$key] = [$offset, $length];
+        $index['d']++;
+
+        $this->writeJsonlIndex($dbname, $index, $shardId);
+
+        // Check if compaction needed (skip during batch operations)
+        if(!$skipCompaction && $index['d'] > $index['n'] * $this->jsonlGarbageThreshold){
+            $this->compactJsonl($dbname, $shardId);
+        }
+
+        return true;
+    }
+
+    /**
+     * Delete record from JSONL (just remove from index)
+     * @param string $dbname
+     * @param int $key
+     * @param int|null $shardId
+     * @return bool
+     */
+    private function deleteJsonlRecord($dbname, $key, $shardId = null){
+        $index = $this->readJsonlIndex($dbname, $shardId);
+        if($index === null || !isset($index['o'][$key])){
+            return false;
+        }
+
+        unset($index['o'][$key]);
+        $index['d']++;
+
+        $this->writeJsonlIndex($dbname, $index, $shardId);
+
+        // Check if compaction needed
+        if($index['d'] > $index['n'] * $this->jsonlGarbageThreshold){
+            $this->compactJsonl($dbname, $shardId);
+        }
+
+        return true;
+    }
+
+    /**
+     * Compact JSONL file (remove garbage)
+     * @param string $dbname
+     * @param int|null $shardId
+     * @return array ['compacted' => int, 'freed' => int]
+     */
+    private function compactJsonl($dbname, $shardId = null){
+        $index = $this->readJsonlIndex($dbname, $shardId);
+        if($index === null){
+            return ['compacted' => 0, 'freed' => 0];
+        }
+
+        if($shardId !== null){
+            $path = $this->getShardPath($dbname, $shardId);
+        } else {
+            $hash = $this->hashDBName($dbname);
+            $path = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+        }
+
+        $tempPath = $path . '.compact.tmp';
+        $handle = fopen($path, 'rb');
+        $tempHandle = fopen($tempPath, 'wb');
+
+        if($handle === false || $tempHandle === false){
+            if($handle) fclose($handle);
+            if($tempHandle) fclose($tempHandle);
+            return ['compacted' => 0, 'freed' => 0];
+        }
+
+        flock($handle, LOCK_SH);
+        flock($tempHandle, LOCK_EX);
+
+        $newIndex = [
+            'v' => 3,
+            'format' => 'jsonl',
+            'created' => $index['created'] ?? time(),
+            'n' => $index['n'],  // Preserve next key counter (don't reset!)
+            'd' => 0,
+            'o' => []
+        ];
+
+        $offset = 0;
+        $compacted = 0;
+
+        // Sort keys for sequential read
+        $sortedKeys = array_keys($index['o']);
+        sort($sortedKeys, SORT_NUMERIC);
+
+        foreach($sortedKeys as $key){
+            [$oldOffset, $length] = $index['o'][$key];
+
+            fseek($handle, $oldOffset);
+            $json = fread($handle, $length);
+
+            fwrite($tempHandle, $json . "\n");
+
+            $newIndex['o'][$key] = [$offset, $length];
+            $offset += $length + 1;
+            $compacted++;
+        }
+
+        $freed = $index['d'];
+
+        flock($handle, LOCK_UN);
+        flock($tempHandle, LOCK_UN);
+        fclose($handle);
+        fclose($tempHandle);
+
+        // Atomic swap
+        rename($tempPath, $path);
+
+        // Update index
+        $this->writeJsonlIndex($dbname, $newIndex, $shardId);
+
+        return ['compacted' => $compacted, 'freed' => $freed];
+    }
+
+    /**
+     * Ensure database is in JSONL format (auto-migrate if needed)
+     * @param string $dbname
+     * @param int|null $shardId
+     * @return bool True if JSONL format (or migrated), false otherwise
+     */
+    private function ensureJsonlFormat($dbname, $shardId = null){
+        if(!$this->jsonlEnabled){
+            return false;
+        }
+
+        if($shardId !== null){
+            $path = $this->getShardPath($dbname, $shardId);
+        } else {
+            $hash = $this->hashDBName($dbname);
+            $path = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+        }
+
+        if(!file_exists($path)){
+            return true; // New file will be created in JSONL format
+        }
+
+        if($this->isJsonlFormat($path)){
+            return true;
+        }
+
+        // Auto-migrate if enabled
+        if($this->jsonlAutoMigrate){
+            return $this->migrateToJsonl($path, $dbname, $shardId);
+        }
+
+        return false;
+    }
+
+    /**
+     * Create new JSONL database file with empty index
+     * @param string $dbname
+     * @param int|null $shardId
+     * @return bool
+     */
+    private function createJsonlDatabase($dbname, $shardId = null){
+        if($shardId !== null){
+            $path = $this->getShardPath($dbname, $shardId);
+        } else {
+            $hash = $this->hashDBName($dbname);
+            $path = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
+        }
+
+        // Create empty file
+        if(!file_exists($path)){
+            touch($path);
+        }
+
+        // Create index
+        $index = [
+            'v' => 3,
+            'format' => 'jsonl',
+            'created' => time(),
+            'n' => 0,
+            'd' => 0,
+            'o' => []
+        ];
+
+        $this->writeJsonlIndex($dbname, $index, $shardId);
+        $this->jsonlFormatCache[$path] = true;
+
+        return true;
+    }
+
+    // ==========================================
     // WRITE BUFFER METHODS
     // ==========================================
 
@@ -994,7 +1584,30 @@ class noneDB {
         $hash = $this->hashDBName($dbname);
         $mainPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
 
-        // Atomically merge buffer into main DB
+        // JSONL FORMAT - append to JSONL file
+        if($this->jsonlEnabled){
+            // Ensure JSONL format exists
+            if(!$this->ensureJsonlFormat($dbname)){
+                $this->createJsonlDatabase($dbname);
+            }
+
+            $index = $this->readJsonlIndex($dbname);
+            if($index === null){
+                @rename($tempPath, $bufferPath);
+                return ['success' => false, 'flushed' => 0, 'error' => 'Failed to read index'];
+            }
+
+            // Bulk append buffer records
+            $this->bulkAppendJsonl($mainPath, $bufferRecords, $index);
+            $this->writeJsonlIndex($dbname, $index);
+
+            // Delete temp file
+            @unlink($tempPath);
+            $this->bufferLastFlush[$dbname] = time();
+            return ['success' => true, 'flushed' => count($bufferRecords), 'error' => null];
+        }
+
+        // V2 FORMAT - Atomically merge buffer into main DB
         $result = $this->atomicModify($mainPath, function($data) use ($bufferRecords) {
             if($data === null){
                 $data = array("data" => []);
@@ -1148,22 +1761,54 @@ class noneDB {
             return false;
         }
 
-        // Read all data from legacy file
-        $legacyData = $this->getData($legacyPath);
-        if($legacyData === false || !isset($legacyData['data'])){
-            return false;
-        }
-
-        $allRecords = $legacyData['data'];
+        // Check if JSONL format
+        $allRecords = [];
         $totalRecords = 0;
         $deletedCount = 0;
 
-        // Count actual records and deleted entries
-        foreach($allRecords as $record){
-            if($record === null){
-                $deletedCount++;
-            } else {
+        if($this->jsonlEnabled && $this->isJsonlFormat($legacyPath)){
+            // JSONL format - read using index
+            $index = $this->readJsonlIndex($dbname);
+            if($index === null){
+                return false;
+            }
+
+            $allRecordsRaw = $this->readAllJsonl($legacyPath, $index);
+            // Convert to indexed array with key field
+            foreach($allRecordsRaw as $record){
+                $key = $record['key'] ?? count($allRecords);
+                unset($record['key']);
+                $allRecords[$key] = $record;
                 $totalRecords++;
+            }
+            // Fill gaps with null for deleted records
+            if(!empty($allRecords)){
+                $maxKey = max(array_keys($allRecords));
+                for($i = 0; $i <= $maxKey; $i++){
+                    if(!isset($allRecords[$i])){
+                        $allRecords[$i] = null;
+                        $deletedCount++;
+                    }
+                }
+                ksort($allRecords);
+                $allRecords = array_values($allRecords);
+            }
+        } else {
+            // V2 format - read using getData
+            $legacyData = $this->getData($legacyPath);
+            if($legacyData === false || !isset($legacyData['data'])){
+                return false;
+            }
+
+            $allRecords = $legacyData['data'];
+
+            // Count actual records and deleted entries
+            foreach($allRecords as $record){
+                if($record === null){
+                    $deletedCount++;
+                } else {
+                    $totalRecords++;
+                }
             }
         }
 
@@ -1215,6 +1860,15 @@ class noneDB {
         // Backup and remove legacy file
         $backupPath = $legacyPath . ".backup";
         rename($legacyPath, $backupPath);
+
+        // Clean up JSONL index file if exists
+        $indexPath = $legacyPath . ".jidx";
+        if(file_exists($indexPath)){
+            @unlink($indexPath);
+        }
+
+        // Clear index cache for this database
+        unset($this->indexCache[$indexPath]);
 
         return true;
     }
@@ -1729,12 +2383,25 @@ class noneDB {
             mkdir($this->dbDir, 0777);
         }
         if(!file_exists($fullDBPath)){
+            // Create info file
             $infoDB = fopen($fullDBPath."info", "a+");
             fwrite($infoDB, time());
             fclose($infoDB);
-            $dbFile=fopen($fullDBPath, 'a+');
-            fwrite($dbFile, json_encode(array("data"=>[])));
-            fclose($dbFile);
+
+            // v3.0: Create empty JSONL format database
+            touch($fullDBPath);
+
+            // Create empty JSONL index
+            $index = [
+                'v' => 3,
+                'format' => 'jsonl',
+                'created' => time(),
+                'n' => 0,
+                'd' => 0,
+                'o' => []
+            ];
+            $this->writeJsonlIndex($dbname, $index);
+
             return true;
         }
         return false;
@@ -1903,6 +2570,50 @@ class noneDB {
         if(!$this->checkDB($dbname)){
             return false;
         }
+
+        // ============================================
+        // JSONL FORMAT - O(1) key lookups
+        // ============================================
+        if($this->jsonlEnabled && $this->ensureJsonlFormat($dbname)){
+            $jsonlIndex = $this->readJsonlIndex($dbname);
+
+            // Key-based search - O(1) lookup
+            if(is_array($filters) && count($filters) > 0){
+                $filterKeys = array_keys($filters);
+                if($filterKeys[0] === "key"){
+                    $result = $this->findByKeyJsonl($dbname, $filters['key']);
+                    return $result !== null ? $result : [];
+                }
+            }
+
+            // Get all records or filter-based search
+            $allRecords = $this->readAllJsonl($fullDBPath, $jsonlIndex);
+
+            // Return all if no filter
+            if(is_int($filters) || (is_array($filters) && count($filters) === 0)){
+                return $allRecords;
+            }
+
+            // Apply filters
+            $result = [];
+            foreach($allRecords as $record){
+                $match = true;
+                foreach($filters as $field => $value){
+                    if(!array_key_exists($field, $record) || $record[$field] !== $value){
+                        $match = false;
+                        break;
+                    }
+                }
+                if($match){
+                    $result[] = $record;
+                }
+            }
+            return $result;
+        }
+
+        // ============================================
+        // LEGACY v2 FORMAT
+        // ============================================
         $rawData = $this->getData($fullDBPath);
         if($rawData === false || !isset($rawData['data'])){
             return false;
@@ -2103,9 +2814,20 @@ class noneDB {
                 $this->checkDB($dbname);
                 $dbnameHashed = $this->hashDBName($dbname);
                 $fullDBPath = $this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
-                $rawData = $this->getData($fullDBPath);
-                if($rawData !== false && isset($rawData['data']) && count($rawData['data']) >= $this->shardSize){
-                    $this->migrateToSharded($dbname);
+
+                // Check record count based on format
+                if($this->jsonlEnabled && $this->isJsonlFormat($fullDBPath)){
+                    // JSONL format - use index count
+                    $index = $this->readJsonlIndex($dbname);
+                    if($index !== null && $index['n'] >= $this->shardSize){
+                        $this->migrateToSharded($dbname);
+                    }
+                } else {
+                    // V2 format - use data array count
+                    $rawData = $this->getData($fullDBPath);
+                    if($rawData !== false && isset($rawData['data']) && count($rawData['data']) >= $this->shardSize){
+                        $this->migrateToSharded($dbname);
+                    }
                 }
             }
         }
@@ -2125,6 +2847,33 @@ class noneDB {
         $fullDBPath = $this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
         $countData = count($validItems);
+
+        // JSONL FORMAT - O(1) append
+        if($this->jsonlEnabled){
+            // Ensure JSONL format (migrate if needed)
+            if(!$this->ensureJsonlFormat($dbname)){
+                // DB doesn't exist yet, create as JSONL
+                $this->createJsonlDatabase($dbname);
+            }
+
+            $index = $this->readJsonlIndex($dbname);
+            if($index === null){
+                return array("n" => 0, "error" => "Failed to read index");
+            }
+
+            // Use bulk append for multiple records
+            $this->bulkAppendJsonl($fullDBPath, $validItems, $index);
+            $this->writeJsonlIndex($dbname, $index);
+
+            // Auto-migrate to sharded format if threshold reached
+            if($this->shardingEnabled && $this->autoMigrate && $index['n'] >= $this->shardSize){
+                $this->migrateToSharded($dbname);
+            }
+
+            return array("n" => $countData);
+        }
+
+        // V2 FORMAT - Original atomic modify
         $result = $this->modifyData($fullDBPath, function($buffer) use ($validItems) {
             if($buffer === null){
                 $buffer = array("data" => []);
@@ -2177,7 +2926,58 @@ class noneDB {
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
-        // Use atomic modify to find and delete in single locked operation
+        // JSONL FORMAT
+        if($this->jsonlEnabled && $this->ensureJsonlFormat($dbname)){
+            $filters = $data;
+            $deletedCount = 0;
+
+            // Key-based delete - O(1)
+            if(isset($filters['key'])){
+                $targetKeys = is_array($filters['key']) ? $filters['key'] : [$filters['key']];
+                foreach($targetKeys as $key){
+                    if($this->deleteJsonlRecord($dbname, $key)){
+                        $deletedCount++;
+                    }
+                }
+                return array("n" => $deletedCount);
+            }
+
+            // Filter-based delete - need to scan
+            $index = $this->readJsonlIndex($dbname);
+            if($index === null){
+                return array("n" => 0);
+            }
+
+            // First pass: collect all keys to delete
+            $keysToDelete = [];
+            foreach($index['o'] as $key => $location){
+                $record = $this->readJsonlRecord($fullDBPath, $location[0], $location[1]);
+                if($record === null) continue;
+
+                $match = true;
+                foreach($filters as $filterKey => $filterValue){
+                    if(!isset($record[$filterKey]) || $record[$filterKey] !== $filterValue){
+                        $match = false;
+                        break;
+                    }
+                }
+
+                if($match){
+                    $keysToDelete[] = $key;
+                }
+            }
+
+            // Second pass: delete collected keys
+            foreach($keysToDelete as $key){
+                if($this->deleteJsonlRecord($dbname, $key)){
+                    $deletedCount++;
+                }
+            }
+
+            return array("n" => $deletedCount);
+        }
+
+        // V2 FORMAT - Use atomic modify to find and delete in single locked operation
         $filters = $data;
         $deletedCount = 0;
         $deletedKeys = [];  // Track deleted keys for index update
@@ -2259,11 +3059,85 @@ class noneDB {
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
 
-        // Use atomic modify to find and update in single locked operation
         $filters = $data[0];
         $setData = $data[1]['set'];
         $updatedCount = 0;
 
+        // JSONL FORMAT
+        if($this->jsonlEnabled && $this->ensureJsonlFormat($dbname)){
+            $index = $this->readJsonlIndex($dbname);
+            if($index === null){
+                return array("n" => 0);
+            }
+
+            // Key-based update - O(1) lookup
+            if(isset($filters['key'])){
+                $targetKeys = is_array($filters['key']) ? $filters['key'] : [$filters['key']];
+                foreach($targetKeys as $key){
+                    if(!isset($index['o'][$key])) continue;
+
+                    $record = $this->readJsonlRecord($fullDBPath, $index['o'][$key][0], $index['o'][$key][1]);
+                    if($record === null) continue;
+
+                    // Apply updates
+                    foreach($setData as $setKey => $setValue){
+                        $record[$setKey] = $setValue;
+                    }
+
+                    // Remove key field (will be re-added by updateJsonlRecord)
+                    unset($record['key']);
+
+                    // Skip compaction during batch updates (last one can trigger)
+                    $isLast = ($key === end($targetKeys));
+                    if($this->updateJsonlRecord($dbname, $key, $record, null, !$isLast)){
+                        $updatedCount++;
+                    }
+                }
+                return array("n" => $updatedCount);
+            }
+
+            // Filter-based update - need to scan
+            $keysToUpdate = [];
+            foreach($index['o'] as $key => $location){
+                $record = $this->readJsonlRecord($fullDBPath, $location[0], $location[1]);
+                if($record === null) continue;
+
+                $match = true;
+                foreach($filters as $filterKey => $filterValue){
+                    if(!isset($record[$filterKey]) || $record[$filterKey] !== $filterValue){
+                        $match = false;
+                        break;
+                    }
+                }
+
+                if($match){
+                    $keysToUpdate[] = ['key' => $key, 'record' => $record];
+                }
+            }
+
+            // Apply updates after collecting all matching keys
+            $lastIdx = count($keysToUpdate) - 1;
+            foreach($keysToUpdate as $idx => $item){
+                $record = $item['record'];
+
+                // Apply updates
+                foreach($setData as $setKey => $setValue){
+                    $record[$setKey] = $setValue;
+                }
+
+                // Remove key field (will be re-added by updateJsonlRecord)
+                unset($record['key']);
+
+                // Only allow compaction on last update
+                if($this->updateJsonlRecord($dbname, $item['key'], $record, null, $idx !== $lastIdx)){
+                    $updatedCount++;
+                }
+            }
+
+            return array("n" => $updatedCount);
+        }
+
+        // V2 FORMAT - Use atomic modify to find and update in single locked operation
         $result = $this->modifyData($fullDBPath, function($buffer) use ($filters, $setData, &$updatedCount) {
             if($buffer === null || !isset($buffer['data'])){
                 return array("data" => []);
@@ -2556,6 +3430,20 @@ class noneDB {
             $hash = $this->hashDBName($dbname);
             $legacyPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
             if(file_exists($legacyPath)){
+                // Check if JSONL format
+                if($this->jsonlEnabled && $this->isJsonlFormat($legacyPath)){
+                    $index = $this->readJsonlIndex($dbname);
+                    if($index !== null){
+                        return array(
+                            "sharded" => false,
+                            "shards" => 0,
+                            "totalRecords" => count($index['o']),
+                            "shardSize" => $this->shardSize
+                        );
+                    }
+                }
+
+                // V2 format
                 $data = $this->getData($legacyPath);
                 if($data !== false && isset($data['data'])){
                     $count = 0;
@@ -2758,6 +3646,28 @@ class noneDB {
                 return $result;
             }
 
+            // Check if JSONL format
+            if($this->jsonlEnabled && $this->isJsonlFormat($fullDBPath)){
+                // JSONL format - use compactJsonl
+                $index = $this->readJsonlIndex($dbname);
+                if($index === null){
+                    $result['status'] = 'read_error';
+                    return $result;
+                }
+
+                $freedSlots = $index['d'];  // Dirty count = freed slots
+                $totalRecords = count($index['o']);  // Active records in index
+
+                $compactResult = $this->compactJsonl($dbname);
+
+                $result['success'] = true;
+                $result['freedSlots'] = $freedSlots;
+                $result['totalRecords'] = $totalRecords;
+                $result['sharded'] = false;
+                return $result;
+            }
+
+            // V2 format
             $rawData = $this->getData($fullDBPath);
             if($rawData === false || !isset($rawData['data'])){
                 $result['status'] = 'read_error';
@@ -3711,6 +4621,7 @@ class noneDBQuery {
 
     /**
      * Helper method to update a record at a specific key position
+     * v3.0: Uses JSONL format via parent's updateJsonlRecord method
      * @param int $key The record key
      * @param array $newData The new record data
      */
@@ -3730,29 +4641,13 @@ class noneDBQuery {
                 $shardSize = $meta['shardSize'];
                 $shardId = (int)floor($key / $shardSize);
                 $localKey = $key % $shardSize;
-                $shardPath = $dbDir . $hash . "-" . $dbname . "_s" . $shardId . ".nonedb";
 
-                if (file_exists($shardPath)) {
-                    $shardContent = file_get_contents($shardPath);
-                    $shardData = json_decode($shardContent, true);
-                    if ($shardData && isset($shardData['data'])) {
-                        $shardData['data'][$localKey] = $newData;
-                        file_put_contents($shardPath, json_encode($shardData), LOCK_EX);
-                        clearstatcache(true, $shardPath);
-                    }
-                }
+                // Use JSONL update method for sharded data
+                $this->callPrivateMethod('updateJsonlRecord', $dbname, $localKey, $newData, $shardId);
             }
         } else {
-            // Non-sharded database
-            if (file_exists($fullPath)) {
-                $content = file_get_contents($fullPath);
-                $data = json_decode($content, true);
-                if ($data && isset($data['data'])) {
-                    $data['data'][$key] = $newData;
-                    file_put_contents($fullPath, json_encode($data), LOCK_EX);
-                    clearstatcache(true, $fullPath);
-                }
-            }
+            // Non-sharded database - use JSONL update
+            $this->callPrivateMethod('updateJsonlRecord', $dbname, $key, $newData, null);
         }
     }
 

@@ -506,8 +506,9 @@ class EdgeCasesTest extends noneDBTestCase
 
     /**
      * @test
+     * v3.0: JSONL format gracefully handles corrupted data (returns empty array)
      */
-    public function operationsOnCorruptedDataReturnsFalse(): void
+    public function operationsOnCorruptedDataReturnsEmptyArray(): void
     {
         $dbName = 'corrupttest';
 
@@ -519,10 +520,11 @@ class EdgeCasesTest extends noneDBTestCase
         file_put_contents($filePath, '{invalid json}', LOCK_EX);
         clearstatcache(true, $filePath);
 
-        // noneDB returns false on corrupted/invalid JSON
+        // JSONL gracefully returns empty array on corrupted data
         $findResult = $this->noneDB->find($dbName, 0);
 
-        $this->assertFalse($findResult);
+        $this->assertIsArray($findResult);
+        $this->assertEmpty($findResult);
     }
 
     /**
@@ -545,21 +547,23 @@ class EdgeCasesTest extends noneDBTestCase
 
     /**
      * @test
+     * v3.0: JSONL format uses index file, non-JSONL data is treated as empty
      */
-    public function operationsOnMissingDataKeyReturnsFalse(): void
+    public function operationsOnMissingDataKeyReturnsEmptyArray(): void
     {
         $dbName = 'missingdatakeytest';
 
-        // Create file with valid JSON but missing 'data' key
+        // Create file with valid JSON but missing 'data' key (non-JSONL format)
         $this->noneDB->createDB($dbName);
         $filePath = $this->getDbFilePath($dbName);
         file_put_contents($filePath, '{"items": []}', LOCK_EX);
         clearstatcache(true, $filePath);
 
-        // noneDB returns false when 'data' key is missing
+        // JSONL uses index file for records, returns empty for non-JSONL data
         $findResult = $this->noneDB->find($dbName, 0);
 
-        $this->assertFalse($findResult);
+        $this->assertIsArray($findResult);
+        $this->assertEmpty($findResult);
     }
 
     // ==========================================

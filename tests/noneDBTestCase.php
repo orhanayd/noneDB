@@ -197,9 +197,10 @@ abstract class noneDBTestCase extends TestCase
     /**
      * Get database contents directly from file
      * Flushes any buffered data first to ensure consistency
+     * v3.0: JSONL-only format - uses .jidx index to determine valid records
      *
      * @param string $dbName Database name
-     * @return array|null
+     * @return array|null Returns normalized format: ['data' => [...records...]]
      */
     protected function getDatabaseContents(string $dbName): ?array
     {
@@ -213,7 +214,48 @@ abstract class noneDBTestCase extends TestCase
         }
 
         $contents = file_get_contents($filePath);
-        return json_decode($contents, true);
+        $indexPath = $filePath . '.jidx';
+
+        // JSONL format with index - only return records that exist in index
+        $records = [];
+
+        if (file_exists($indexPath)) {
+            $index = json_decode(file_get_contents($indexPath), true);
+            if ($index !== null && isset($index['o'])) {
+                // Read all lines and filter by index
+                $lines = explode("\n", trim($contents));
+                foreach ($lines as $line) {
+                    $line = trim($line);
+                    if (empty($line)) continue;
+                    $record = json_decode($line, true);
+                    if ($record !== null && isset($record['key'])) {
+                        $key = $record['key'];
+                        // Only include records that exist in index (not deleted)
+                        if (isset($index['o'][$key])) {
+                            unset($record['key']);
+                            $records[$key] = $record;
+                        }
+                    }
+                }
+            }
+        } else {
+            // No index file - read all records (legacy or new DB)
+            $lines = explode("\n", trim($contents));
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if (empty($line)) continue;
+                $record = json_decode($line, true);
+                if ($record !== null) {
+                    $key = $record['key'] ?? count($records);
+                    unset($record['key']);
+                    $records[$key] = $record;
+                }
+            }
+        }
+
+        // Sort by key to maintain order
+        ksort($records);
+        return ['data' => array_values($records)];
     }
 
     /**
