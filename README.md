@@ -875,10 +875,12 @@ noneDB::disableStaticCache();
 noneDB::enableStaticCache();
 ```
 
-### Migration from v2.x
+### Migration from Previous Versions
 
-Automatic migration occurs on first database access:
-1. Old format detected (`{"data": [...]}`)
+**Backwards Compatibility:** Databases created with any previous version (v1.x `{"data":[...]}` or v2.x JSON array format) are automatically migrated to the new JSONL format on first access. Your existing data is preserved - just upgrade and go.
+
+**How it works:**
+1. Old format detected (`{"data": [...]}` or JSON array)
 2. Records converted to JSONL (one per line)
 3. Byte-offset index created (`.jidx` file)
 4. Original file overwritten with JSONL content
