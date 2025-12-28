@@ -191,6 +191,44 @@ $db->query("users")->where(['active' => true])->limit(10)->get();
 
 **Improvement:** Variable, up to 90%+ faster for limit queries on large datasets
 
+#### O(1) Count via Index Metadata
+
+```php
+// Before: count() loaded ALL records into memory
+$db->count("users");  // 100K records = 536ms (full scan)
+
+// After: count() uses index metadata directly
+$db->count("users");  // 100K records = <1ms (O(1) lookup)
+```
+
+**How it works:**
+- Non-sharded: `count(index['o'])` - offset map entry count
+- Sharded: `meta['totalRecords']` - metadata value
+
+**Improvement:** 100-330x faster for count operations
+
+#### Hash Cache Persistence
+
+PBKDF2 hash computations are now persisted to disk:
+
+```php
+// Before: Cold start = 10-50ms per database (1000 PBKDF2 iterations)
+// After: Cold start = <1ms (loaded from .nonedb_hash_cache file)
+```
+
+**File:** `db/.nonedb_hash_cache` (JSON format)
+
+#### atomicReadFast() for Index Reads
+
+Optimized read path for index files:
+
+```php
+// Before: atomicRead() with clearstatcache() + retry loop
+// After: atomicReadFast() - direct blocking lock, no retry overhead
+```
+
+**Improvement:** 2-5ms faster per index read
+
 ---
 
 ### Performance Results
@@ -207,14 +245,16 @@ $db->query("users")->where(['active' => true])->limit(10)->get();
 
 | Operation | noneDB | SleekDB | Winner |
 |-----------|--------|---------|--------|
-| Bulk Insert | 1.55s | 22.68s | **noneDB 15x** |
-| Find All | 253ms | 16.48s | **noneDB 65x** |
-| Find Filter | 286ms | 16.1s | **noneDB 56x** |
-| Update | 307ms | 22.93s | **noneDB 75x** |
-| Delete | 333ms | 17.73s | **noneDB 53x** |
-| Complex Query | 373ms | 16.43s | **noneDB 44x** |
-| Find by Key | 325ms | <1ms | SleekDB |
-| Count | 228ms | 36ms | SleekDB |
+| Bulk Insert | 3.34s | 30.76s | **noneDB 9x** |
+| Find All | 595ms | 39.03s | **noneDB 66x** |
+| Find Filter | 524ms | 41.64s | **noneDB 79x** |
+| Update | 1.53s | 61.27s | **noneDB 40x** |
+| Delete | 1.75s | 40.01s | **noneDB 23x** |
+| Complex Query | 591ms | 41.3s | **noneDB 70x** |
+| Count | **<1ms** | 96ms | **noneDB 258x** |
+| Find by Key (cold) | 561ms | <1ms | SleekDB |
+
+> **Note:** noneDB now wins **7 out of 8** operations. Count uses O(1) index metadata lookup.
 
 ### Breaking Changes
 
@@ -235,9 +275,10 @@ Automatic migration occurs on first database access:
 
 ### Test Results
 
-- **723 tests, 1924 assertions** (all passing)
+- **759 tests, 2127 assertions** (all passing)
 - Full sharding support verified
 - Concurrency tests updated for JSONL behavior
+- Count fast-path tests added
 
 ---
 

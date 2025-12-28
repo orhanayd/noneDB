@@ -64,9 +64,11 @@ foreach ($sizes as $size) {
     echo yellow("  Testing with " . number_format($size) . " records\n");
     echo yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    // Clean up files and caches
-    $files = glob(__DIR__ . '/../db/*' . $dbName . '*');
-    foreach ($files as $f) @unlink($f);
+    // Clean up ENTIRE db folder for fair benchmarking
+    $files = glob(__DIR__ . '/../db/*');
+    foreach ($files as $f) {
+        if (is_file($f)) @unlink($f);
+    }
     noneDB::clearStaticCache();  // Clear static cache for accurate benchmarks
     clearstatcache(true);
 
@@ -102,9 +104,11 @@ foreach ($sizes as $size) {
     $results['write']['delete'][$size] = $deleteTime;
     echo "    delete():     " . green(formatTime($deleteTime)) . "\n";
 
-    // Re-insert for read tests
-    $files = glob(__DIR__ . '/../db/*' . $dbName . '*');
-    foreach ($files as $f) @unlink($f);
+    // Re-insert for read tests (clean entire db folder)
+    $files = glob(__DIR__ . '/../db/*');
+    foreach ($files as $f) {
+        if (is_file($f)) @unlink($f);
+    }
     noneDB::clearStaticCache();
     clearstatcache(true);
     $db->insert($dbName, $data);

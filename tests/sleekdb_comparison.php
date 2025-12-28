@@ -75,29 +75,34 @@ foreach ($sizes as $size) {
     echo yellow("  Testing with " . number_format($size) . " records\n");
     echo yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
 
-    // Cleanup
+    // Cleanup - Clean ALL databases for fair benchmarking
     $nonedbName = "benchmark_nonedb_" . $size;
     $sleekdbDir = __DIR__ . "/sleekdb_benchmark_" . $size;
 
-    // Clean noneDB
-    $files = glob(__DIR__ . '/../db/*benchmark_nonedb_' . $size . '*');
-    foreach ($files as $f) @unlink($f);
+    // Clean ENTIRE noneDB db folder
+    $files = glob(__DIR__ . '/../db/*');
+    foreach ($files as $f) {
+        if (is_file($f)) @unlink($f);
+    }
     \noneDB::clearStaticCache();
     clearstatcache(true);
 
-    // Clean SleekDB
-    if (is_dir($sleekdbDir)) {
-        $files = glob($sleekdbDir . '/*');
-        foreach ($files as $f) {
-            if (is_dir($f)) {
-                $subfiles = glob($f . '/*');
-                foreach ($subfiles as $sf) @unlink($sf);
-                @rmdir($f);
-            } else {
-                @unlink($f);
+    // Clean ALL SleekDB benchmark folders
+    $sleekDirs = glob(__DIR__ . '/sleekdb_benchmark_*');
+    foreach ($sleekDirs as $dir) {
+        if (is_dir($dir)) {
+            $files = glob($dir . '/*');
+            foreach ($files as $f) {
+                if (is_dir($f)) {
+                    $subfiles = glob($f . '/*');
+                    foreach ($subfiles as $sf) @unlink($sf);
+                    @rmdir($f);
+                } else {
+                    @unlink($f);
+                }
             }
+            @rmdir($dir);
         }
-        @rmdir($sleekdbDir);
     }
 
     // Generate data
