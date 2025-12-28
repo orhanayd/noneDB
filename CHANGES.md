@@ -197,24 +197,24 @@ $db->query("users")->where(['active' => true])->limit(10)->get();
 
 | Operation | v2.x | v3.0 | Improvement |
 |-----------|------|------|-------------|
-| insert 50K | 1.3s | 723ms | **2x faster** |
-| insert 100K | 2.8s | 1.8s | **1.5x faster** |
-| find(all) 100K | 1.1s | 568ms | **2x faster** |
-| find(filter) 100K | 854ms | 463ms | **2x faster** |
-| update 100K | 1.1s | 362ms | **3x faster** |
+| insert 50K | 1.3s | 704ms | **2x faster** |
+| insert 100K | 2.8s | 1.6s | **1.8x faster** |
+| find(all) 100K | 1.1s | 554ms | **2x faster** |
+| find(filter) 100K | 854ms | 434ms | **2x faster** |
+| update 100K | 1.1s | 367ms | **3x faster** |
 
 ### SleekDB Comparison (100K Records)
 
 | Operation | noneDB | SleekDB | Winner |
 |-----------|--------|---------|--------|
-| Bulk Insert | 1.52s | 26.26s | **noneDB 17x** |
-| Find All | 244ms | 14.08s | **noneDB 58x** |
-| Find Filter | 252ms | 14.51s | **noneDB 58x** |
-| Update | 294ms | 21.44s | **noneDB 73x** |
-| Delete | 343ms | 16.07s | **noneDB 47x** |
-| Complex Query | 421ms | 14.76s | **noneDB 35x** |
-| Find by Key | 249ms | <1ms | SleekDB |
-| Count | 226ms | 35ms | SleekDB |
+| Bulk Insert | 1.55s | 22.68s | **noneDB 15x** |
+| Find All | 253ms | 16.48s | **noneDB 65x** |
+| Find Filter | 286ms | 16.1s | **noneDB 56x** |
+| Update | 307ms | 22.93s | **noneDB 75x** |
+| Delete | 333ms | 17.73s | **noneDB 53x** |
+| Complex Query | 373ms | 16.43s | **noneDB 44x** |
+| Find by Key | 325ms | <1ms | SleekDB |
+| Count | 228ms | 36ms | SleekDB |
 
 ### Breaking Changes
 

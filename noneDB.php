@@ -64,6 +64,8 @@ class noneDB {
     private static $staticMetaCacheTime=[];   // Shared meta cache timestamps
     private static $staticHashCache=[];       // Shared hash cache (PBKDF2 is expensive)
     private static $staticFormatCache=[];     // Shared format detection cache
+    private static $staticFileExistsCache=[]; // Shared file_exists cache - v3.0.0
+    private static $staticSanitizeCache=[];   // Shared dbname sanitization cache - v3.0.0
     private static $staticCacheEnabled=true;  // Enable/disable static caching
 
     /**
@@ -92,6 +94,8 @@ class noneDB {
         self::$staticMetaCacheTime = [];
         self::$staticHashCache = [];
         self::$staticFormatCache = [];
+        self::$staticFileExistsCache = [];
+        self::$staticSanitizeCache = [];
     }
 
     /**
@@ -108,6 +112,72 @@ class noneDB {
      */
     public static function enableStaticCache(){
         self::$staticCacheEnabled = true;
+    }
+
+    /**
+     * Cached file_exists check - v3.0.0
+     * Reduces disk I/O by caching file existence checks
+     *
+     * @param string $path File path to check
+     * @return bool True if file exists
+     */
+    private function cachedFileExists($path){
+        if(!self::$staticCacheEnabled){
+            return file_exists($path);
+        }
+        if(isset(self::$staticFileExistsCache[$path])){
+            return self::$staticFileExistsCache[$path];
+        }
+        $exists = file_exists($path);
+        self::$staticFileExistsCache[$path] = $exists;
+        return $exists;
+    }
+
+    /**
+     * Mark file as existing in cache (call after creating file)
+     * @param string $path File path
+     */
+    private function markFileExists($path){
+        if(self::$staticCacheEnabled){
+            self::$staticFileExistsCache[$path] = true;
+        }
+    }
+
+    /**
+     * Mark file as not existing in cache (call after deleting file)
+     * @param string $path File path
+     */
+    private function markFileNotExists($path){
+        if(self::$staticCacheEnabled){
+            self::$staticFileExistsCache[$path] = false;
+        }
+    }
+
+    /**
+     * Invalidate file exists cache for a specific path
+     * @param string $path File path
+     */
+    private function invalidateFileExistsCache($path){
+        unset(self::$staticFileExistsCache[$path]);
+    }
+
+    /**
+     * Sanitize database name - removes invalid characters
+     * Uses static cache to avoid redundant regex operations - v3.0.0
+     *
+     * @param string $dbname Database name to sanitize
+     * @return string Sanitized database name
+     */
+    private function sanitizeDbName($dbname){
+        if(!self::$staticCacheEnabled){
+            return preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        }
+        if(isset(self::$staticSanitizeCache[$dbname])){
+            return self::$staticSanitizeCache[$dbname];
+        }
+        $sanitized = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        self::$staticSanitizeCache[$dbname] = $sanitized;
+        return $sanitized;
     }
 
     /**
@@ -338,7 +408,7 @@ class noneDB {
      * @return string
      */
     private function getShardPath($dbname, $shardId){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $hash = $this->hashDBName($dbname);
         return $this->dbDir . $hash . "-" . $dbname . "_s" . $shardId . ".nonedb";
     }
@@ -349,7 +419,7 @@ class noneDB {
      * @return string
      */
     private function getMetaPath($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $hash = $this->hashDBName($dbname);
         return $this->dbDir . $hash . "-" . $dbname . ".nonedb.meta";
     }
@@ -360,20 +430,21 @@ class noneDB {
      * @return bool
      */
     private function isSharded($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
 
         // Check cache first
         if(isset($this->shardedCache[$dbname])){
             return $this->shardedCache[$dbname];
         }
 
+        // Use file_exists directly - shardedCache handles caching
         $result = file_exists($this->getMetaPath($dbname));
         $this->shardedCache[$dbname] = $result;
         return $result;
     }
 
     private function invalidateShardedCache($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         unset($this->shardedCache[$dbname]);
     }
 
@@ -383,7 +454,7 @@ class noneDB {
      * @return array|null
      */
     private function readMeta($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $path = $this->getMetaPath($dbname);
         return $this->atomicRead($path, null);
     }
@@ -396,7 +467,7 @@ class noneDB {
      * @return array|null
      */
     private function getCachedMeta($dbname, $forceRefresh = false){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $now = time();
 
         if(!$forceRefresh && isset($this->metaCache[$dbname])){
@@ -419,7 +490,7 @@ class noneDB {
      * @param string $dbname
      */
     private function invalidateMetaCache($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         unset($this->metaCache[$dbname]);
         unset($this->metaCacheTime[$dbname]);
     }
@@ -431,7 +502,7 @@ class noneDB {
      * @return bool
      */
     private function writeMeta($dbname, $meta){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $path = $this->getMetaPath($dbname);
         $result = $this->atomicWrite($path, $meta, true);
         if($result){
@@ -447,7 +518,7 @@ class noneDB {
      * @return array ['success' => bool, 'data' => modified meta, 'error' => string|null]
      */
     private function modifyMeta($dbname, callable $modifier){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $path = $this->getMetaPath($dbname);
         $result = $this->atomicModify($path, $modifier, null, true);
         if($result['success']){
@@ -502,7 +573,7 @@ class noneDB {
      * @return string
      */
     private function getIndexPath($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $hash = $this->hashDBName($dbname);
         return $this->dbDir . $hash . "-" . $dbname . ".nonedb.idx";
     }
@@ -513,7 +584,7 @@ class noneDB {
      * @return array|null
      */
     private function readIndex($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
 
         // Check runtime cache first
         if(isset($this->indexCache[$dbname])){
@@ -537,7 +608,7 @@ class noneDB {
      * @return bool
      */
     private function writeIndex($dbname, $index){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $index['updated'] = time();
         $path = $this->getIndexPath($dbname);
         $result = $this->atomicWrite($path, $index, false);
@@ -554,7 +625,7 @@ class noneDB {
      * @param string $dbname
      */
     private function invalidateIndexCache($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         unset($this->indexCache[$dbname]);
     }
 
@@ -565,7 +636,7 @@ class noneDB {
      * @return array|null
      */
     private function buildIndex($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
 
         $index = [
             'version' => 1,
@@ -845,13 +916,13 @@ class noneDB {
      * @return bool True if JSONL format
      */
     private function isJsonlFormat($path){
-        if(!file_exists($path)){
-            return false;
-        }
-
-        // Check cache first
+        // Check cache first (includes file existence)
         if(isset($this->jsonlFormatCache[$path])){
             return $this->jsonlFormatCache[$path];
+        }
+
+        if(!$this->cachedFileExists($path)){
+            return false;
         }
 
         $handle = fopen($path, 'rb');
@@ -878,7 +949,7 @@ class noneDB {
      * @return string
      */
     private function getJsonlIndexPath($dbname, $shardId = null){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $hash = $this->hashDBName($dbname);
         if($shardId !== null){
             return $this->dbDir . $hash . "-" . $dbname . "_s" . $shardId . ".nonedb.jidx";
@@ -929,7 +1000,7 @@ class noneDB {
      * @return bool Success
      */
     private function migrateToJsonl($path, $dbname, $shardId = null){
-        if(!file_exists($path)){
+        if(!$this->cachedFileExists($path)){
             return false;
         }
 
@@ -1449,7 +1520,7 @@ class noneDB {
             $path = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
         }
 
-        if(!file_exists($path)){
+        if(!$this->cachedFileExists($path)){
             return true; // New file will be created in JSONL format
         }
 
@@ -1480,8 +1551,9 @@ class noneDB {
         }
 
         // Create empty file
-        if(!file_exists($path)){
+        if(!$this->cachedFileExists($path)){
             touch($path);
+            $this->markFileExists($path);
         }
 
         // Create index
@@ -1510,7 +1582,7 @@ class noneDB {
      * @return string
      */
     private function getBufferPath($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $hash = $this->hashDBName($dbname);
         return $this->dbDir . $hash . "-" . $dbname . ".nonedb.buffer";
     }
@@ -1522,7 +1594,7 @@ class noneDB {
      * @return string
      */
     private function getShardBufferPath($dbname, $shardId){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $hash = $this->hashDBName($dbname);
         return $this->dbDir . $hash . "-" . $dbname . "_s" . $shardId . ".nonedb.buffer";
     }
@@ -1711,7 +1783,7 @@ class noneDB {
      * @return array ['success' => bool, 'flushed' => int, 'error' => string|null]
      */
     private function flushBufferToMain($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $bufferPath = $this->getBufferPath($dbname);
 
         if(!$this->hasBuffer($bufferPath)){
@@ -1789,7 +1861,7 @@ class noneDB {
      * @return array ['success' => bool, 'flushed' => int, 'error' => string|null]
      */
     private function flushShardBuffer($dbname, $shardId){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $bufferPath = $this->getShardBufferPath($dbname, $shardId);
 
         if(!$this->hasBuffer($bufferPath)){
@@ -1881,7 +1953,7 @@ class noneDB {
      * @return array ['flushed' => total records flushed]
      */
     private function flushAllShardBuffers($dbname, $meta = null){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         if($meta === null){
             $meta = $this->getCachedMeta($dbname);
         }
@@ -1904,11 +1976,11 @@ class noneDB {
      * @return bool
      */
     private function migrateToSharded($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $hash = $this->hashDBName($dbname);
         $legacyPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
 
-        if(!file_exists($legacyPath)){
+        if(!$this->cachedFileExists($legacyPath)){
             return false;
         }
 
@@ -2034,7 +2106,7 @@ class noneDB {
      * @return array
      */
     private function insertSharded($dbname, $data){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $main_response = array("n" => 0);
 
         // Validate data first
@@ -2222,7 +2294,7 @@ class noneDB {
      * @return array|false
      */
     private function findSharded($dbname, $filters){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $meta = $this->getCachedMeta($dbname);
         if($meta === null){
             return false;
@@ -2320,7 +2392,7 @@ class noneDB {
      * @return array
      */
     private function updateSharded($dbname, $data){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $main_response = array("n" => 0);
 
         $filters = $data[0];
@@ -2392,7 +2464,7 @@ class noneDB {
      * @return array
      */
     private function deleteSharded($dbname, $data){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $main_response = array("n" => 0);
 
         $filters = $data;
@@ -2495,7 +2567,7 @@ class noneDB {
         if(!$dbname){
             return false;
         }
-        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         // Sanitize sonrası boş string kontrolü
         if($dbname === ''){
             return false;
@@ -2510,9 +2582,9 @@ class noneDB {
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
         /**
-         * check db is in db folder?
+         * check db is in db folder? (use cache for existing files)
          */
-        if(file_exists($fullDBPath)){
+        if($this->cachedFileExists($fullDBPath)){
             return true;
         }
 
@@ -2530,13 +2602,13 @@ class noneDB {
      * @param string $dbname
      */
     public function createDB($dbname){
-        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $dbnameHashed=$this->hashDBName($dbname);
         $fullDBPath=$this->dbDir.$dbnameHashed."-".$dbname.".nonedb";
         if(!file_exists($this->dbDir)){
             mkdir($this->dbDir, 0777);
         }
-        if(!file_exists($fullDBPath)){
+        if(!$this->cachedFileExists($fullDBPath)){
             // Create info file
             $infoDB = fopen($fullDBPath."info", "a+");
             fwrite($infoDB, time());
@@ -2555,6 +2627,9 @@ class noneDB {
                 'o' => []
             ];
             $this->writeJsonlIndex($dbname, $index);
+
+            // Mark file as existing in cache
+            $this->markFileExists($fullDBPath);
 
             return true;
         }
@@ -2595,7 +2670,7 @@ class noneDB {
         if(is_bool($info)){
             $withMetadata = $info;
         }else{
-            $specificDb = preg_replace("/[^A-Za-z0-9' -]/", '', $info);
+            $specificDb = $this->sanitizeDbName($info);
             $this->checkDB($specificDb);
         }
 
@@ -2704,7 +2779,7 @@ class noneDB {
      * @param mixed $filters 0 for all, array for filter
      */
     public function find($dbname, $filters=0){
-        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
 
         // Check for sharded database first
         if($this->isSharded($dbname)){
@@ -2885,7 +2960,7 @@ class noneDB {
      * @param array $data
      */
     public function insert($dbname, $data){
-        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $main_response=array("n"=>0);
 
         if(!is_array($data)){
@@ -3056,7 +3131,7 @@ class noneDB {
      * @param array $data
      */
     public function delete($dbname, $data){
-        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $main_response=array("n"=>0);
         if(!is_array($data)){
             $main_response['error']="Please check your delete paramters";
@@ -3189,7 +3264,7 @@ class noneDB {
      * @param array $data
      */
     public function update($dbname, $data){
-        $dbname =  preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $main_response=array("n"=>0);
         if(!is_array($data) || count($data) === count($data, COUNT_RECURSIVE) || !isset($data[1]['set']) || array_key_exists("key", $data[1]['set'])){
             $main_response['error']="Please check your update paramters";
@@ -3577,13 +3652,13 @@ class noneDB {
      * @return array|false
      */
     public function getShardInfo($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
 
         if(!$this->isSharded($dbname)){
             // Check if legacy database exists
             $hash = $this->hashDBName($dbname);
             $legacyPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
-            if(file_exists($legacyPath)){
+            if($this->cachedFileExists($legacyPath)){
                 // Check if JSONL format
                 if($this->jsonlEnabled && $this->isJsonlFormat($legacyPath)){
                     $index = $this->readJsonlIndex($dbname);
@@ -3640,7 +3715,7 @@ class noneDB {
      * @return array ['success' => bool, 'flushed' => int, 'error' => string|null]
      */
     public function flush($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
 
         if($this->isSharded($dbname)){
             $result = $this->flushAllShardBuffers($dbname);
@@ -3706,7 +3781,7 @@ class noneDB {
      * @return array Buffer statistics
      */
     public function getBufferInfo($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
 
         $info = [
             'enabled' => $this->bufferEnabled,
@@ -3787,7 +3862,7 @@ class noneDB {
      * @return array
      */
     public function compact($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
         $result = array("success" => false, "freedSlots" => 0);
 
         // Handle non-sharded database
@@ -3795,7 +3870,7 @@ class noneDB {
             $hash = $this->hashDBName($dbname);
             $fullDBPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
 
-            if(!file_exists($fullDBPath)){
+            if(!$this->cachedFileExists($fullDBPath)){
                 $result['status'] = 'database_not_found';
                 return $result;
             }
@@ -3929,7 +4004,7 @@ class noneDB {
      * @return array ["success" => bool, "status" => string]
      */
     public function migrate($dbname){
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $dbname);
+        $dbname = $this->sanitizeDbName($dbname);
 
         if($this->isSharded($dbname)){
             return array("success" => true, "status" => "already_sharded");
@@ -3938,7 +4013,7 @@ class noneDB {
         // Check if legacy database exists
         $hash = $this->hashDBName($dbname);
         $legacyPath = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
-        if(!file_exists($legacyPath)){
+        if(!$this->cachedFileExists($legacyPath)){
             return array("success" => false, "status" => "database_not_found");
         }
 
@@ -4810,7 +4885,7 @@ class noneDBQuery {
      * @param array $newData The new record data
      */
     private function updateRecordAtPosition(int $key, array $newData): void {
-        $dbname = preg_replace("/[^A-Za-z0-9' -]/", '', $this->dbname);
+        $dbname = $this->callPrivateMethod('sanitizeDbName', $this->dbname);
         $hash = $this->callPrivateMethod('hashDBName', $dbname);
         $dbDir = $this->getDbDir();
         $fullPath = $dbDir . $hash . "-" . $dbname . ".nonedb";

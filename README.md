@@ -618,12 +618,12 @@ With Sharding (50K records, 5 shards):
 
 | Operation | Cold (first access) | Warm (cached) | Notes |
 |-----------|---------------------|---------------|-------|
-| **find(key)** | ~70 ms | **~7 ms** | O(1) byte-offset lookup |
-| **find(filter)** | ~65 ms | ~60 ms | Scans all shards |
-| **update** | ~160 ms | ~150 ms | Only modifies target shard |
-| **insert** | ~590 ms | - | Distributes across shards |
+| **find(key)** | ~66 ms | **~0.05 ms** | O(1) byte-offset lookup |
+| **find(filter)** | ~219 ms | ~200 ms | Scans all shards |
+| **update** | ~148 ms | ~140 ms | Only modifies target shard |
+| **insert** | ~704 ms | - | Distributes across shards |
 
-> **Key Benefit:** With O(1) byte-offset indexing, key lookups are fast. Warm cache eliminates index reload overhead. Filter operations scan all shards but each shard file is smaller.
+> **Key Benefit:** With O(1) byte-offset indexing, key lookups are near-instant after cache warm-up. Filter operations scan all shards but each shard file is smaller.
 
 ### Sharding API
 
@@ -867,54 +867,54 @@ Tested on PHP 8.2, macOS (Apple Silicon M-series) - **v3.0 JSONL Storage Engine*
 
 | Records | Cold | Warm | Notes |
 |---------|------|------|-------|
-| 100 | <1 ms | 0.04 ms | Non-sharded |
-| 1K | <1 ms | 0.03 ms | Non-sharded |
-| 10K | 55 ms | ~0.05 ms | Sharded (1 shard) |
-| 50K | 48 ms | ~0.05 ms | Sharded (5 shards) |
-| 100K | 81 ms | ~0.05 ms | Sharded (10 shards) |
-| 500K | 383 ms | ~0.05 ms | Sharded (50 shards) |
+| 100 | 3 ms | 0.03 ms | Non-sharded |
+| 1K | 3 ms | 0.03 ms | Non-sharded |
+| 10K | 22 ms | 0.05 ms | Sharded (1 shard) |
+| 50K | 66 ms | 0.05 ms | Sharded (5 shards) |
+| 100K | 137 ms | 0.05 ms | Sharded (10 shards) |
+| 500K | 582 ms | 0.05 ms | Sharded (50 shards) |
 
 > **Key lookups are O(1)** - constant time regardless of database size after cache warm-up!
 
 ### Write Operations
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| insert() | 5 ms | 14 ms | 132 ms | 723 ms | 1.8 s | 9 s |
-| update() | 4 ms | 73 ms | 29 ms | 150 ms | 362 ms | 1.7 s |
-| delete() | 4 ms | 66 ms | 28 ms | 149 ms | 418 ms | 1.6 s |
+| insert() | 5 ms | 10 ms | 132 ms | 704 ms | 1.6 s | 8.6 s |
+| update() | 4 ms | 68 ms | 29 ms | 148 ms | 367 ms | 1.6 s |
+| delete() | 4 ms | 66 ms | 28 ms | 146 ms | 369 ms | 1.6 s |
 
 > Note: 10K+ triggers sharding, making update/delete faster than 1K (smaller shard files)
 
 ### Read Operations
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| find(all) | 2 ms | 12 ms | 41 ms | 258 ms | 568 ms | 2.5 s |
-| find(key) | <1 ms | <1 ms | 57 ms | 222 ms | 443 ms | 2.2 s |
-| find(filter) | <1 ms | 7 ms | 43 ms | 216 ms | 463 ms | 2.5 s |
+| find(all) | 2 ms | 12 ms | 41 ms | 238 ms | 554 ms | 2.5 s |
+| find(key) | <1 ms | <1 ms | 56 ms | 247 ms | 430 ms | 2.1 s |
+| find(filter) | <1 ms | 7 ms | 43 ms | 219 ms | 434 ms | 2.2 s |
 
 > **find(key)** first call includes index loading. Subsequent calls: ~0.05ms (see O(1) table above)
 
 ### Query & Aggregation
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| count() | <1 ms | 7 ms | 40 ms | 282 ms | 602 ms | 2.5 s |
-| distinct() | <1 ms | 7 ms | 44 ms | 307 ms | 578 ms | 3.1 s |
-| sum() | <1 ms | 7 ms | 44 ms | 230 ms | 586 ms | 2.8 s |
-| like() | <1 ms | 9 ms | 60 ms | 310 ms | 733 ms | 3.7 s |
-| between() | <1 ms | 8 ms | 54 ms | 284 ms | 677 ms | 3.3 s |
-| sort() | 2 ms | 16 ms | 147 ms | 862 ms | 2.2 s | 11.8 s |
-| first() | <1 ms | 7 ms | 45 ms | 245 ms | 590 ms | 2.7 s |
-| exists() | <1 ms | 7 ms | 45 ms | 258 ms | 611 ms | 2.8 s |
+| count() | <1 ms | 7 ms | 41 ms | 204 ms | 553 ms | 2.4 s |
+| distinct() | <1 ms | 7 ms | 43 ms | 233 ms | 543 ms | 3.1 s |
+| sum() | <1 ms | 7 ms | 43 ms | 229 ms | 533 ms | 2.8 s |
+| like() | <1 ms | 9 ms | 58 ms | 315 ms | 695 ms | 4.2 s |
+| between() | <1 ms | 8 ms | 51 ms | 278 ms | 667 ms | 3.7 s |
+| sort() | 1 ms | 15 ms | 148 ms | 880 ms | 2 s | 12.1 s |
+| first() | <1 ms | 7 ms | 45 ms | 249 ms | 548 ms | 2.9 s |
+| exists() | <1 ms | 7 ms | 44 ms | 255 ms | 572 ms | 3.2 s |
 
 ### Method Chaining
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| whereIn() | <1 ms | 8 ms | 55 ms | 305 ms | 778 ms | 4.3 s |
-| orWhere() | 1 ms | 8 ms | 56 ms | 331 ms | 716 ms | 4.5 s |
-| search() | 4 ms | 9 ms | 70 ms | 392 ms | 828 ms | 5.1 s |
-| groupBy() | <1 ms | 7 ms | 50 ms | 313 ms | 695 ms | 4.6 s |
-| select() | 2 ms | 8 ms | 74 ms | 544 ms | 1.2 s | 5.6 s |
-| complex chain | 1 ms | 9 ms | 62 ms | 381 ms | 759 ms | 4 s |
+| whereIn() | <1 ms | 8 ms | 53 ms | 305 ms | 708 ms | 4.3 s |
+| orWhere() | <1 ms | 8 ms | 55 ms | 326 ms | 712 ms | 4.4 s |
+| search() | <1 ms | 9 ms | 67 ms | 391 ms | 838 ms | 4.9 s |
+| groupBy() | <1 ms | 8 ms | 48 ms | 311 ms | 677 ms | 4.6 s |
+| select() | <1 ms | 8 ms | 70 ms | 533 ms | 1.1 s | 5.6 s |
+| complex chain | <1 ms | 8 ms | 60 ms | 360 ms | 761 ms | 4 s |
 
 > **Complex chain:** `where() + whereIn() + between() + select() + sort() + limit()`
 
@@ -938,11 +938,11 @@ noneDB v3.0 excels in **bulk operations** and **large datasets**:
 
 | Strength | Performance |
 |----------|-------------|
-| 🚀 **Bulk Insert** | **17x faster** than SleekDB |
-| 🔍 **Find All** | **58x faster** at scale |
+| 🚀 **Bulk Insert** | **18x faster** than SleekDB |
+| 🔍 **Find All** | **79x faster** at scale |
 | 🎯 **Filter Queries** | **58x faster** at scale |
-| ✏️ **Update Operations** | **73x faster** on large datasets |
-| 🗑️ **Delete Operations** | **47x faster** on large datasets |
+| ✏️ **Update Operations** | **75x faster** on large datasets |
+| 🗑️ **Delete Operations** | **53x faster** on large datasets |
 | 📦 **Large Datasets** | Handles 500K+ records with auto-sharding |
 | 🔒 **Thread Safety** | Atomic file locking for concurrent access |
 | ⚡ **Static Cache** | Cross-instance cache sharing |
@@ -979,20 +979,20 @@ noneDB v3.0 excels in **bulk operations** and **large datasets**:
 #### Bulk Insert
 | Records | noneDB | SleekDB | Winner |
 |---------|--------|---------|--------|
-| 100 | 5ms | 20ms | **noneDB 4x** |
-| 1K | 17ms | 166ms | **noneDB 10x** |
-| 10K | 133ms | 1.76s | **noneDB 13x** |
-| 50K | 696ms | 12.07s | **noneDB 17x** |
-| 100K | 1.52s | 26.26s | **noneDB 17x** |
+| 100 | 5ms | 23ms | **noneDB 5x** |
+| 1K | 11ms | 170ms | **noneDB 15x** |
+| 10K | 133ms | 2.38s | **noneDB 18x** |
+| 50K | 712ms | 11.69s | **noneDB 16x** |
+| 100K | 1.55s | 22.68s | **noneDB 15x** |
 
 #### Find All Records
 | Records | noneDB | SleekDB | Winner |
 |---------|--------|---------|--------|
-| 100 | 3ms | 6ms | **noneDB 2x** |
-| 1K | 7ms | 33ms | **noneDB 5x** |
-| 10K | 23ms | 359ms | **noneDB 15x** |
-| 50K | 107ms | 1.98s | **noneDB 19x** |
-| 100K | 244ms | 14.08s | **noneDB 58x** |
+| 100 | 3ms | 5ms | **noneDB 2x** |
+| 1K | 7ms | 32ms | **noneDB 5x** |
+| 10K | 24ms | 352ms | **noneDB 15x** |
+| 50K | 114ms | 8.97s | **noneDB 79x** |
+| 100K | 253ms | 16.48s | **noneDB 65x** |
 
 #### Find by Key (Single Record)
 | Records | noneDB | SleekDB | Winner |
@@ -1000,46 +1000,46 @@ noneDB v3.0 excels in **bulk operations** and **large datasets**:
 | 100 | 3ms | <1ms | SleekDB |
 | 1K | 3ms | <1ms | SleekDB |
 | 10K | 43ms | <1ms | **SleekDB** |
-| 50K | 131ms | <1ms | **SleekDB** |
-| 100K | 249ms | <1ms | **SleekDB** |
+| 50K | 167ms | <1ms | **SleekDB** |
+| 100K | 325ms | <1ms | **SleekDB** |
 
 > **Note:** SleekDB's file-per-record design gives O(1) key lookup. noneDB must load shard index first.
 
 #### Find with Filter
 | Records | noneDB | SleekDB | Winner |
 |---------|--------|---------|--------|
-| 100 | <1ms | 4ms | **noneDB 11x** |
+| 100 | <1ms | 5ms | **noneDB 11x** |
 | 1K | 4ms | 35ms | **noneDB 9x** |
-| 10K | 23ms | 373ms | **noneDB 16x** |
-| 50K | 120ms | 2.06s | **noneDB 17x** |
-| 100K | 252ms | 14.51s | **noneDB 58x** |
+| 10K | 23ms | 382ms | **noneDB 16x** |
+| 50K | 131ms | 7.64s | **noneDB 58x** |
+| 100K | 286ms | 16.1s | **noneDB 56x** |
 
 #### Update Operations
 | Records | noneDB | SleekDB | Winner |
 |---------|--------|---------|--------|
-| 100 | 4ms | 7ms | **noneDB 2x** |
-| 1K | 73ms | 65ms | ~Tie |
-| 10K | 30ms | 762ms | **noneDB 25x** |
-| 50K | 144ms | 4.63s | **noneDB 32x** |
-| 100K | 294ms | 21.44s | **noneDB 73x** |
+| 100 | 4ms | 8ms | **noneDB 2x** |
+| 1K | 123ms | 68ms | SleekDB 1.8x |
+| 10K | 30ms | 1.14s | **noneDB 38x** |
+| 50K | 147ms | 9.41s | **noneDB 64x** |
+| 100K | 307ms | 22.93s | **noneDB 75x** |
 
 #### Delete Operations
 | Records | noneDB | SleekDB | Winner |
 |---------|--------|---------|--------|
 | 100 | 4ms | 5ms | ~Tie |
-| 1K | 68ms | 49ms | SleekDB 1.4x |
-| 10K | 31ms | 525ms | **noneDB 17x** |
-| 50K | 162ms | 3.59s | **noneDB 22x** |
-| 100K | 343ms | 16.07s | **noneDB 47x** |
+| 1K | 71ms | 47ms | SleekDB 1.5x |
+| 10K | 33ms | 690ms | **noneDB 21x** |
+| 50K | 167ms | 6.99s | **noneDB 42x** |
+| 100K | 333ms | 17.73s | **noneDB 53x** |
 
 #### Complex Query (where + sort + limit)
 | Records | noneDB | SleekDB | Winner |
 |---------|--------|---------|--------|
-| 100 | <1ms | 21ms | **noneDB 49x** |
-| 1K | 4ms | 37ms | **noneDB 10x** |
-| 10K | 26ms | 403ms | **noneDB 15x** |
-| 50K | 155ms | 2.07s | **noneDB 13x** |
-| 100K | 421ms | 14.76s | **noneDB 35x** |
+| 100 | <1ms | 4ms | **noneDB 10x** |
+| 1K | 4ms | 38ms | **noneDB 10x** |
+| 10K | 30ms | 383ms | **noneDB 13x** |
+| 50K | 159ms | 3.56s | **noneDB 22x** |
+| 100K | 373ms | 16.43s | **noneDB 44x** |
 
 ---
 
@@ -1047,12 +1047,12 @@ noneDB v3.0 excels in **bulk operations** and **large datasets**:
 
 | Use Case | Winner | Advantage |
 |----------|--------|-----------|
-| **Bulk Insert** | **noneDB** | 10-17x faster |
-| **Find All** | **noneDB** | 15-58x faster |
+| **Bulk Insert** | **noneDB** | 15-18x faster |
+| **Find All** | **noneDB** | 15-79x faster |
 | **Find with Filter** | **noneDB** | 16-58x faster |
-| **Update** | **noneDB** | 25-73x faster |
-| **Delete** | **noneDB** | 17-47x faster |
-| **Complex Query** | **noneDB** | 13-49x faster |
+| **Update** | **noneDB** | 38-75x faster |
+| **Delete** | **noneDB** | 21-53x faster |
+| **Complex Query** | **noneDB** | 10-44x faster |
 | **Find by Key** | **SleekDB** | O(1) file access |
 | **Count** | **SleekDB** | ~6x faster |
 
