@@ -55,8 +55,8 @@ $db->rebuildSpatialIndex("restaurants", "location");
 All distance parameters and results are in **meters**.
 
 ```php
-// Find within radius (meters)
-$nearby = $db->withinDistance("restaurants", "location", 28.97, 41.00, 5000);  // 5km
+// Find within radius
+$nearby = $db->withinDistance("restaurants", "location", 28.97, 41.00, 5000);  // 5000 meters
 
 // Find in bounding box
 $inArea = $db->withinBBox("restaurants", "location", 28.97, 41.00, 29.00, 41.03);
@@ -130,7 +130,7 @@ $results = $db->query("users")
 
 // Combined with spatial queries
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.97, 41.00, 5000)  // 5km
+    ->withinDistance('location', 28.97, 41.00, 5000)  // 5000 meters
     ->where([
         'rating' => ['$gte' => 4.0],
         'cuisine' => ['$in' => ['turkish', 'italian']]

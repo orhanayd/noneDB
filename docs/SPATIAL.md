@@ -360,7 +360,7 @@ Add distance field to results.
 
 ```php
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 10000)  // 10km
+    ->withinDistance('location', 28.9784, 41.0082, 10000)  // 10000 meters
     ->withDistance('location', 28.9784, 41.0082)
     ->sort('_distance', 'asc')
     ->get();
@@ -378,7 +378,7 @@ The real power comes from combining spatial queries with attribute filters using
 
 ```php
 $openNearby = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 3000)  // 3km
+    ->withinDistance('location', 28.9784, 41.0082, 3000)  // 3000 meters
     ->where(['open_now' => true])
     ->get();
 ```
@@ -388,7 +388,7 @@ $openNearby = $db->query("restaurants")
 ```php
 // Find highly-rated affordable restaurants nearby
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5km
+    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5000 meters
     ->where([
         'rating' => ['$gte' => 4.0],
         'price_range' => ['$lte' => 3],
@@ -402,7 +402,7 @@ $results = $db->query("restaurants")
 ```php
 // Find nearby Turkish or Italian restaurants
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5km
+    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5000 meters
     ->where([
         'cuisine' => ['$in' => ['turkish', 'italian', 'greek']]
     ])
@@ -410,7 +410,7 @@ $results = $db->query("restaurants")
 
 // Exclude fast food
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5km
+    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5000 meters
     ->where([
         'category' => ['$nin' => ['fast_food']]
     ])
@@ -422,7 +422,7 @@ $results = $db->query("restaurants")
 ```php
 // Mid-range restaurants nearby
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 3000)  // 3km
+    ->withinDistance('location', 28.9784, 41.0082, 3000)  // 3000 meters
     ->where([
         'price_range' => ['$gte' => 2, '$lte' => 4]
     ])
@@ -434,7 +434,7 @@ $results = $db->query("restaurants")
 ```php
 // Find places with "Cafe" in name
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 2000)  // 2km
+    ->withinDistance('location', 28.9784, 41.0082, 2000)  // 2000 meters
     ->where([
         'name' => ['$like' => 'Cafe']
     ])
@@ -446,7 +446,7 @@ $results = $db->query("restaurants")
 ```php
 // Find places with delivery available
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5km
+    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5000 meters
     ->where([
         'delivery' => true,
         'menu' => ['$exists' => true]
@@ -459,7 +459,7 @@ $results = $db->query("restaurants")
 ```php
 // Food delivery app: nearby, open, delivers, good rating, affordable
 $restaurants = $db->query("restaurants")
-    ->withinDistance('location', $userLon, $userLat, 5000)  // 5km
+    ->withinDistance('location', $userLon, $userLat, 5000)  // 5000 meters
     ->where([
         'open_now' => true,
         'delivery' => true,
@@ -498,14 +498,14 @@ noneDB uses an optimized R-tree with:
 2. **Use withinDistance for radius search**
    ```php
    // Good: Uses R-tree to narrow candidates
-   $db->withinDistance("locations", "coords", $lon, $lat, 10000);  // 10km
+   $db->withinDistance("locations", "coords", $lon, $lat, 10000);  // 10000 meters
    ```
 
 3. **Combine spatial with where for efficiency**
    ```php
    // Spatial filter first, then attribute filter
    $db->query("locations")
-       ->withinDistance('coords', $lon, $lat, 5000)  // 5km, spatial first
+       ->withinDistance('coords', $lon, $lat, 5000)  // 5000 meters, spatial first
        ->where(['active' => true])                    // Then filter
        ->get();
    ```
@@ -513,7 +513,7 @@ noneDB uses an optimized R-tree with:
 4. **Use withDistance + sort for distance-ordered results**
    ```php
    $db->query("locations")
-       ->withinDistance('coords', $lon, $lat, 10000)  // 10km
+       ->withinDistance('coords', $lon, $lat, 10000)  // 10000 meters
        ->withDistance('coords', $lon, $lat)
        ->sort('_distance', 'asc')
        ->limit(10)
@@ -549,7 +549,7 @@ class DeliveryService {
 
     public function findRestaurants($userLat, $userLon, $filters = []) {
         $query = $this->db->query("restaurants")
-            ->withinDistance('location', $userLon, $userLat, 5000)  // 5km
+            ->withinDistance('location', $userLon, $userLat, 5000)  // 5000 meters
             ->where([
                 'open_now' => true,
                 'delivery' => true,
