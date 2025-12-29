@@ -1,5 +1,237 @@
 # noneDB Changelog
 
+## v3.1.0 (2025-12-29)
+
+### Major: Spatial Indexing + MongoDB-Style Comparison Operators
+
+This release introduces **R-tree spatial indexing** for geospatial queries and **MongoDB-style comparison operators** for advanced filtering.
+
+---
+
+### Part 1: R-tree Spatial Indexing
+
+#### GeoJSON Support
+
+Full GeoJSON geometry support:
+- **Point** - Single location `[lon, lat]`
+- **LineString** - Path/route
+- **Polygon** - Area with boundary (supports holes)
+- **MultiPoint**, **MultiLineString**, **MultiPolygon**
+- **GeometryCollection**
+
+```php
+// Insert GeoJSON data
+$db->insert("restaurants", [
+    'name' => 'Ottoman Kitchen',
+    'location' => [
+        'type' => 'Point',
+        'coordinates' => [28.9784, 41.0082]  // [longitude, latitude]
+    ]
+]);
+```
+
+#### Spatial Index Management
+
+```php
+// Create R-tree index
+$db->createSpatialIndex("restaurants", "location");
+// Returns: ["success" => true, "indexed" => 150]
+
+// Check if index exists
+$db->hasSpatialIndex("restaurants", "location");  // true/false
+
+// List all spatial indexes
+$db->getSpatialIndexes("restaurants");  // ["location"]
+
+// Drop index
+$db->dropSpatialIndex("restaurants", "location");
+
+// Rebuild index
+$db->rebuildSpatialIndex("restaurants", "location");
+```
+
+#### Spatial Query Methods
+
+All distance parameters and results are in **meters**.
+
+```php
+// Find within radius
+$nearby = $db->withinDistance("restaurants", "location", 28.97, 41.00, 5000);  // 5000 meters
+
+// Find in bounding box
+$inArea = $db->withinBBox("restaurants", "location", 28.97, 41.00, 29.00, 41.03);
+
+// Find K nearest
+$closest = $db->nearest("restaurants", "location", 28.97, 41.00, 10);
+
+// Find within polygon
+$inPolygon = $db->withinPolygon("restaurants", "location", $polygon);
+```
+
+#### Query Builder Integration
+
+```php
+$results = $db->query("restaurants")
+    ->withinDistance('location', 28.97, 41.00, 5000)  // 5000 meters
+    ->where(['open_now' => true])
+    ->withDistance('location', 28.97, 41.00)  // _distance field in meters
+    ->sort('_distance', 'asc')
+    ->limit(10)
+    ->get();
+```
+
+#### Spatial Index File Structure
+
+```
+hash-dbname.nonedb.sidx.location      # R-tree spatial index
+hash-dbname.nonedb.gsidx.location     # Global spatial index (sharded)
+```
+
+---
+
+### Part 2: MongoDB-Style Comparison Operators
+
+#### Operator Reference
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `$gt` | Greater than | `['age' => ['$gt' => 18]]` |
+| `$gte` | Greater than or equal | `['price' => ['$gte' => 100]]` |
+| `$lt` | Less than | `['stock' => ['$lt' => 10]]` |
+| `$lte` | Less than or equal | `['rating' => ['$lte' => 5]]` |
+| `$eq` | Equal (explicit) | `['status' => ['$eq' => 'active']]` |
+| `$ne` | Not equal | `['role' => ['$ne' => 'guest']]` |
+| `$in` | Value in array | `['category' => ['$in' => ['a', 'b']]]` |
+| `$nin` | Value not in array | `['tag' => ['$nin' => ['spam']]]` |
+| `$exists` | Field exists | `['email' => ['$exists' => true]]` |
+| `$like` | Pattern match | `['name' => ['$like' => '^John']]` |
+| `$regex` | Regular expression | `['email' => ['$regex' => '@gmail.com$']]` |
+| `$contains` | Array/string contains | `['tags' => ['$contains' => 'featured']]` |
+
+#### Usage Examples
+
+```php
+// Range query
+$results = $db->query("products")
+    ->where([
+        'price' => ['$gte' => 100, '$lte' => 500],
+        'stock' => ['$gt' => 0]
+    ])
+    ->get();
+
+// Multiple operators
+$results = $db->query("users")
+    ->where([
+        'role' => ['$in' => ['admin', 'moderator']],
+        'status' => ['$ne' => 'banned'],
+        'email' => ['$exists' => true]
+    ])
+    ->get();
+
+// Combined with spatial queries
+$results = $db->query("restaurants")
+    ->withinDistance('location', 28.97, 41.00, 5000)  // 5000 meters
+    ->where([
+        'rating' => ['$gte' => 4.0],
+        'cuisine' => ['$in' => ['turkish', 'italian']]
+    ])
+    ->get();
+```
+
+---
+
+### Part 3: R-tree Performance Optimizations
+
+| Optimization | Description |
+|--------------|-------------|
+| **Parent Pointer Map** | O(1) parent lookup instead of O(n) tree scan |
+| **Linear Split Algorithm** | O(n) seed selection instead of O(n²) quadratic split |
+| **Dirty Flag Pattern** | Single disk write per batch instead of n writes |
+| **Distance Memoization** | Cached Haversine distance calculations |
+| **Centroid Caching** | Cached geometry centroid calculations |
+| **Node Size 32** | Fewer tree levels and splits (increased from 16) |
+| **Adaptive nearest()** | Exponential radius expansion for efficient k-NN |
+
+#### Performance Results
+
+| Operation | 100 | 1K | 5K |
+|-----------|-----|-----|-----|
+| createSpatialIndex | 2.4 ms | 81 ms | 423 ms |
+| withinDistance (10km) | 3 ms | 32 ms | 166 ms |
+| withinBBox | 0.7 ms | 7 ms | 38 ms |
+| nearest(10) | 2 ms | 2 ms | 2.4 ms |
+
+#### Comparison Operator Performance
+
+| Operator | 100 | 1K | 5K |
+|----------|-----|-----|-----|
+| `$gt`, `$gte`, `$lt`, `$lte` | 0.7 ms | 6-7 ms | 33-38 ms |
+| `$in`, `$nin` | 0.7 ms | 6.5-7 ms | 36-37 ms |
+| `$like`, `$regex` | 0.7 ms | 7 ms | 39 ms |
+| Complex (4 operators) | 0.7 ms | 7.5 ms | 43 ms |
+
+---
+
+### New Methods
+
+#### Spatial Index Methods (noneDB)
+- `createSpatialIndex($dbname, $field)` - Create R-tree index
+- `hasSpatialIndex($dbname, $field)` - Check if index exists
+- `getSpatialIndexes($dbname)` - List all spatial indexes
+- `dropSpatialIndex($dbname, $field)` - Remove index
+- `rebuildSpatialIndex($dbname, $field)` - Rebuild index
+- `withinDistance($dbname, $field, $lon, $lat, $meters)` - Find within radius (meters)
+- `withinBBox($dbname, $field, $minLon, $minLat, $maxLon, $maxLat)` - Find in bbox
+- `nearest($dbname, $field, $lon, $lat, $k)` - Find K nearest
+- `withinPolygon($dbname, $field, $polygon)` - Find in polygon
+- `validateGeoJSON($geometry)` - Validate GeoJSON
+
+#### Query Builder Methods (noneDBQuery)
+- `withinDistance($field, $lon, $lat, $meters)` - Spatial: within radius (meters)
+- `withinBBox($field, $minLon, $minLat, $maxLon, $maxLat)` - Spatial: within bbox
+- `nearest($field, $lon, $lat, $k)` - Spatial: K nearest
+- `withinPolygon($field, $polygon)` - Spatial: within polygon
+- `withDistance($field, $lon, $lat)` - Add `_distance` field to results (meters)
+
+#### Comparison Operators in where()
+- `$gt`, `$gte`, `$lt`, `$lte` - Numeric comparisons
+- `$eq`, `$ne` - Equality comparisons
+- `$in`, `$nin` - Array membership
+- `$exists` - Field existence
+- `$like` - Pattern matching (case-insensitive)
+- `$regex` - Regular expression matching
+- `$contains` - Array/string contains
+
+---
+
+### Test Results
+
+- **970 tests, 3079 assertions** (all passing)
+- 42 new comparison operator tests
+- 24 new spatial + operator combination tests
+- 48 new query documentation tests
+- Full sharded spatial index support verified
+
+### Documentation
+
+New documentation files in `docs/`:
+- `QUERY.md` - Complete query builder reference
+- `SPATIAL.md` - Spatial indexing guide
+- `CONFIGURATION.md` - Configuration options
+- `API.md` - Complete API reference
+- `BENCHMARKS.md` - Performance benchmarks
+
+### Breaking Changes
+
+None. Spatial indexing is a new feature in v3.1.0.
+
+**Note:** All spatial distance parameters and results use **meters** as the unit:
+- `withinDistance()` - distance parameter in meters
+- `_distance` field in results is in meters
+- `nearest()` `maxDistance` option is in meters
+
+---
+
 ## v3.0.0 (2025-12-28)
 
 ### Major: Pure JSONL Storage Engine + Maximum Performance Optimizations

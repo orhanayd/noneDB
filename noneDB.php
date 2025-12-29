@@ -70,11 +70,22 @@ class noneDB {
     private static $staticFileExistsCache=[]; // Shared file_exists cache - v3.0.0
     private static $staticSanitizeCache=[];   // Shared dbname sanitization cache - v3.0.0
     private static $staticFieldIndexCache=[]; // Shared field index cache - v3.0.0
+    private static $staticSpatialIndexCache=[]; // Shared spatial R-tree index cache - v3.1.0
+    private static $staticGlobalSpatialIndexCache=[]; // Shared global spatial index cache - v3.1.0
     private static $staticCacheEnabled=true;  // Enable/disable static caching
 
     // Field indexing configuration - v3.0.0
     private $fieldIndexEnabled = true;        // Enable field-based indexing
     private $fieldIndexCache = [];            // Instance-level field index cache
+
+    // Spatial indexing configuration - v3.1.0
+    private $spatialIndexEnabled = true;      // Enable spatial R-tree indexing
+    private $spatialIndexCache = [];          // Instance-level spatial index cache
+    private $globalSpatialIndexCache = [];    // Instance-level global spatial index cache
+    private $rtreeNodeSize = 32;              // Max entries per R-tree node (increased from 16 for fewer splits)
+    private $dirtySpatialIndexes = [];        // Dirty flags for batch spatial writes
+    private $distanceCache = [];              // Haversine distance memoization cache
+    private $centroidCache = [];              // Geometry centroid cache
 
     // Persistent hash cache - v3.0.0 performance optimization
     private $hashCacheFile = null;            // Path to persistent hash cache file
@@ -99,7 +110,12 @@ class noneDB {
             $this->hashCache = &self::$staticHashCache;
             $this->jsonlFormatCache = &self::$staticFormatCache;
             $this->fieldIndexCache = &self::$staticFieldIndexCache;
+            $this->spatialIndexCache = &self::$staticSpatialIndexCache;
+            $this->globalSpatialIndexCache = &self::$staticGlobalSpatialIndexCache;
         }
+
+        // Register shutdown function to flush dirty spatial indexes
+        register_shutdown_function([$this, 'flushSpatialIndexes']);
     }
 
     /**
@@ -355,6 +371,8 @@ class noneDB {
         self::$staticFileExistsCache = [];
         self::$staticSanitizeCache = [];
         self::$staticFieldIndexCache = [];
+        self::$staticSpatialIndexCache = [];
+        self::$staticGlobalSpatialIndexCache = [];
     }
 
     /**
@@ -2048,9 +2066,9 @@ class noneDB {
             $path = $this->dbDir . $hash . "-" . $dbname . ".nonedb";
         }
 
-        // Read old record for field index update
+        // Read old record for field/spatial index update
         $oldRecord = null;
-        if($this->fieldIndexEnabled){
+        if($this->fieldIndexEnabled || $this->spatialIndexEnabled){
             $location = $index['o'][$key];
             $oldRecord = $this->readJsonlRecord($path, $location[0], $location[1]);
         }
@@ -2076,6 +2094,11 @@ class noneDB {
         // Update field indexes
         if($this->fieldIndexEnabled && $oldRecord !== null){
             $this->updateFieldIndexOnUpdate($dbname, $oldRecord, $newData, $key, $shardId);
+        }
+
+        // Update spatial indexes (v3.1.0)
+        if($this->spatialIndexEnabled && $oldRecord !== null){
+            $this->updateSpatialIndexOnUpdate($dbname, $oldRecord, $newData, $key, $shardId);
         }
 
         // Check if compaction needed (skip during batch operations)
@@ -2117,6 +2140,8 @@ class noneDB {
         $indexUpdates = [];
         $updated = 0;
 
+        $needRecord = $this->fieldIndexEnabled || $this->spatialIndexEnabled;
+
         foreach($updates as $item){
             $key = $item['key'];
             $newData = $item['data'];
@@ -2125,13 +2150,21 @@ class noneDB {
                 continue;
             }
 
-            // Read old record for field index update
-            if($this->fieldIndexEnabled){
+            // Read old record for field/spatial index update
+            $oldRecord = null;
+            if($needRecord){
                 $location = $index['o'][$key];
                 $oldRecord = $this->readJsonlRecord($path, $location[0], $location[1]);
-                if($oldRecord !== null){
-                    $this->updateFieldIndexOnUpdate($dbname, $oldRecord, $newData, $key, $shardId);
-                }
+            }
+
+            // Update field indexes
+            if($this->fieldIndexEnabled && $oldRecord !== null){
+                $this->updateFieldIndexOnUpdate($dbname, $oldRecord, $newData, $key, $shardId);
+            }
+
+            // Update spatial indexes (v3.1.0)
+            if($this->spatialIndexEnabled && $oldRecord !== null){
+                $this->updateSpatialIndexOnUpdate($dbname, $oldRecord, $newData, $key, $shardId);
             }
 
             $newData['key'] = $key;
@@ -2161,6 +2194,11 @@ class noneDB {
         // Single index write
         $this->writeJsonlIndex($dbname, $index, $shardId);
 
+        // Batch flush spatial indexes (single write instead of N writes)
+        if($this->spatialIndexEnabled && $updated > 0){
+            $this->flushSpatialIndexes();
+        }
+
         // Check if compaction needed
         if($index['d'] > $index['n'] * $this->jsonlGarbageThreshold){
             $this->compactJsonl($dbname, $shardId);
@@ -2182,9 +2220,9 @@ class noneDB {
             return false;
         }
 
-        // Read record for field index update before deletion
+        // Read record for field/spatial index update before deletion
         $record = null;
-        if($this->fieldIndexEnabled){
+        if($this->fieldIndexEnabled || $this->spatialIndexEnabled){
             if($shardId !== null){
                 $path = $this->getShardPath($dbname, $shardId);
             } else {
@@ -2203,6 +2241,11 @@ class noneDB {
         // Update field indexes
         if($this->fieldIndexEnabled && $record !== null){
             $this->updateFieldIndexOnDelete($dbname, $record, $key, $shardId);
+        }
+
+        // Update spatial indexes (v3.1.0)
+        if($this->spatialIndexEnabled && $record !== null){
+            $this->updateSpatialIndexOnDelete($dbname, $record, $key, $shardId);
         }
 
         // Check if compaction needed
@@ -2230,9 +2273,10 @@ class noneDB {
             return 0;
         }
 
-        // Get path for field index updates
+        // Get path for field/spatial index updates
         $path = null;
-        if($this->fieldIndexEnabled){
+        $needRecord = $this->fieldIndexEnabled || $this->spatialIndexEnabled;
+        if($needRecord){
             if($shardId !== null){
                 $path = $this->getShardPath($dbname, $shardId);
             } else {
@@ -2247,13 +2291,21 @@ class noneDB {
                 continue;
             }
 
-            // Read record for field index update before deletion
-            if($this->fieldIndexEnabled && $path !== null){
+            // Read record for field/spatial index update before deletion
+            $record = null;
+            if($needRecord && $path !== null){
                 $location = $index['o'][$key];
                 $record = $this->readJsonlRecord($path, $location[0], $location[1]);
-                if($record !== null){
-                    $this->updateFieldIndexOnDelete($dbname, $record, $key, $shardId);
-                }
+            }
+
+            // Update field indexes
+            if($this->fieldIndexEnabled && $record !== null){
+                $this->updateFieldIndexOnDelete($dbname, $record, $key, $shardId);
+            }
+
+            // Update spatial indexes (v3.1.0)
+            if($this->spatialIndexEnabled && $record !== null){
+                $this->updateSpatialIndexOnDelete($dbname, $record, $key, $shardId);
             }
 
             unset($index['o'][$key]);
@@ -2263,6 +2315,11 @@ class noneDB {
 
         // Single index write for all deletions
         $this->writeJsonlIndex($dbname, $index, $shardId);
+
+        // Batch flush spatial indexes (single write instead of N writes)
+        if($this->spatialIndexEnabled && $deleted > 0){
+            $this->flushSpatialIndexes();
+        }
 
         // Check if compaction needed
         if($index['d'] > $index['n'] * $this->jsonlGarbageThreshold){
@@ -3233,6 +3290,18 @@ class noneDB {
                     $this->updateFieldIndexOnInsert($dbname, $record, $insertedKeys[$i], $shardId);
                 }
             }
+
+            // Update spatial indexes (v3.1.0)
+            if($this->spatialIndexEnabled){
+                foreach($writeInfo['items'] as $i => $record){
+                    $this->updateSpatialIndexOnInsert($dbname, $record, $insertedKeys[$i], $shardId);
+                }
+            }
+        }
+
+        // Batch flush spatial indexes after all shards processed (single write per index)
+        if($this->spatialIndexEnabled){
+            $this->flushSpatialIndexes();
         }
 
         return array("n" => $insertedCount);
@@ -4122,6 +4191,15 @@ class noneDB {
             foreach($validItems as $i => $record){
                 $this->updateFieldIndexOnInsert($dbname, $record, $keys[$i], null);
             }
+        }
+
+        // Update spatial indexes for inserted records (v3.1.0)
+        if($this->spatialIndexEnabled){
+            foreach($validItems as $i => $record){
+                $this->updateSpatialIndexOnInsert($dbname, $record, $keys[$i], null);
+            }
+            // Batch flush spatial indexes (single write instead of N writes)
+            $this->flushSpatialIndexes();
         }
 
         // Auto-migrate to sharded format if threshold reached
@@ -5099,6 +5177,2147 @@ class noneDB {
     }
 
     // ==========================================
+    // SPATIAL INDEX - GEOJSON SUPPORT (v3.1.0)
+    // ==========================================
+
+    /**
+     * Validate a GeoJSON geometry object
+     * Supports: Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon, GeometryCollection
+     *
+     * @param array $geometry GeoJSON geometry object
+     * @return array ['valid' => bool, 'error' => ?string, 'type' => ?string]
+     */
+    public function validateGeoJSON($geometry): array {
+        if (!is_array($geometry)) {
+            return ['valid' => false, 'error' => 'Geometry must be an array', 'type' => null];
+        }
+        if (!isset($geometry['type'])) {
+            return ['valid' => false, 'error' => 'Missing type property', 'type' => null];
+        }
+
+        $type = $geometry['type'];
+
+        // GeometryCollection has different structure
+        if ($type === 'GeometryCollection') {
+            return $this->validateGeometryCollection($geometry);
+        }
+
+        if (!isset($geometry['coordinates'])) {
+            return ['valid' => false, 'error' => 'Missing coordinates property', 'type' => null];
+        }
+
+        $coords = $geometry['coordinates'];
+
+        if (!is_array($coords)) {
+            return ['valid' => false, 'error' => 'Coordinates must be an array', 'type' => null];
+        }
+
+        switch ($type) {
+            case 'Point':
+                return $this->validateGeoJSONPoint($coords);
+            case 'LineString':
+                return $this->validateGeoJSONLineString($coords);
+            case 'Polygon':
+                return $this->validateGeoJSONPolygon($coords);
+            case 'MultiPoint':
+                return $this->validateGeoJSONMultiPoint($coords);
+            case 'MultiLineString':
+                return $this->validateGeoJSONMultiLineString($coords);
+            case 'MultiPolygon':
+                return $this->validateGeoJSONMultiPolygon($coords);
+            default:
+                return ['valid' => false, 'error' => "Unknown geometry type: $type", 'type' => null];
+        }
+    }
+
+    /**
+     * Validate Point coordinates [lon, lat] or [lon, lat, altitude]
+     */
+    private function validateGeoJSONPoint(array $coords): array {
+        if (!is_array($coords) || count($coords) < 2) {
+            return ['valid' => false, 'error' => 'Point must have at least 2 coordinates', 'type' => null];
+        }
+        if (!is_numeric($coords[0]) || !is_numeric($coords[1])) {
+            return ['valid' => false, 'error' => 'Point coordinates must be numeric', 'type' => null];
+        }
+        $lon = (float)$coords[0];
+        $lat = (float)$coords[1];
+        if ($lon < -180 || $lon > 180) {
+            return ['valid' => false, 'error' => 'Longitude must be between -180 and 180', 'type' => null];
+        }
+        if ($lat < -90 || $lat > 90) {
+            return ['valid' => false, 'error' => 'Latitude must be between -90 and 90', 'type' => null];
+        }
+        return ['valid' => true, 'error' => null, 'type' => 'Point'];
+    }
+
+    /**
+     * Validate LineString coordinates [[lon,lat], [lon,lat], ...]
+     */
+    private function validateGeoJSONLineString(array $coords): array {
+        if (!is_array($coords) || count($coords) < 2) {
+            return ['valid' => false, 'error' => 'LineString must have at least 2 positions', 'type' => null];
+        }
+        foreach ($coords as $i => $position) {
+            $result = $this->validateGeoJSONPoint($position);
+            if (!$result['valid']) {
+                return ['valid' => false, 'error' => "Invalid position at index $i: " . $result['error'], 'type' => null];
+            }
+        }
+        return ['valid' => true, 'error' => null, 'type' => 'LineString'];
+    }
+
+    /**
+     * Validate Polygon coordinates [[[lon,lat], ...], ...]
+     * First ring is outer boundary, subsequent rings are holes
+     */
+    private function validateGeoJSONPolygon(array $coords): array {
+        if (!is_array($coords) || count($coords) < 1) {
+            return ['valid' => false, 'error' => 'Polygon must have at least one ring', 'type' => null];
+        }
+        foreach ($coords as $ringIndex => $ring) {
+            if (!is_array($ring) || count($ring) < 4) {
+                return ['valid' => false, 'error' => "Ring $ringIndex must have at least 4 positions", 'type' => null];
+            }
+            // Validate each position
+            foreach ($ring as $i => $position) {
+                $result = $this->validateGeoJSONPoint($position);
+                if (!$result['valid']) {
+                    return ['valid' => false, 'error' => "Invalid position at ring $ringIndex, index $i: " . $result['error'], 'type' => null];
+                }
+            }
+            // Check if ring is closed (first == last)
+            $first = $ring[0];
+            $last = $ring[count($ring) - 1];
+            if ($first[0] !== $last[0] || $first[1] !== $last[1]) {
+                return ['valid' => false, 'error' => "Ring $ringIndex must be closed (first and last positions must be identical)", 'type' => null];
+            }
+        }
+        return ['valid' => true, 'error' => null, 'type' => 'Polygon'];
+    }
+
+    /**
+     * Validate MultiPoint coordinates [[lon,lat], [lon,lat], ...]
+     */
+    private function validateGeoJSONMultiPoint(array $coords): array {
+        if (!is_array($coords) || count($coords) < 1) {
+            return ['valid' => false, 'error' => 'MultiPoint must have at least one point', 'type' => null];
+        }
+        foreach ($coords as $i => $position) {
+            $result = $this->validateGeoJSONPoint($position);
+            if (!$result['valid']) {
+                return ['valid' => false, 'error' => "Invalid point at index $i: " . $result['error'], 'type' => null];
+            }
+        }
+        return ['valid' => true, 'error' => null, 'type' => 'MultiPoint'];
+    }
+
+    /**
+     * Validate MultiLineString coordinates [[[lon,lat], ...], ...]
+     */
+    private function validateGeoJSONMultiLineString(array $coords): array {
+        if (!is_array($coords) || count($coords) < 1) {
+            return ['valid' => false, 'error' => 'MultiLineString must have at least one linestring', 'type' => null];
+        }
+        foreach ($coords as $i => $lineString) {
+            $result = $this->validateGeoJSONLineString($lineString);
+            if (!$result['valid']) {
+                return ['valid' => false, 'error' => "Invalid linestring at index $i: " . $result['error'], 'type' => null];
+            }
+        }
+        return ['valid' => true, 'error' => null, 'type' => 'MultiLineString'];
+    }
+
+    /**
+     * Validate MultiPolygon coordinates [[[[lon,lat], ...], ...], ...]
+     */
+    private function validateGeoJSONMultiPolygon(array $coords): array {
+        if (!is_array($coords) || count($coords) < 1) {
+            return ['valid' => false, 'error' => 'MultiPolygon must have at least one polygon', 'type' => null];
+        }
+        foreach ($coords as $i => $polygon) {
+            $result = $this->validateGeoJSONPolygon($polygon);
+            if (!$result['valid']) {
+                return ['valid' => false, 'error' => "Invalid polygon at index $i: " . $result['error'], 'type' => null];
+            }
+        }
+        return ['valid' => true, 'error' => null, 'type' => 'MultiPolygon'];
+    }
+
+    /**
+     * Validate GeometryCollection
+     */
+    private function validateGeometryCollection(array $geometry): array {
+        if (!isset($geometry['geometries']) || !is_array($geometry['geometries'])) {
+            return ['valid' => false, 'error' => 'GeometryCollection must have geometries array', 'type' => null];
+        }
+        foreach ($geometry['geometries'] as $i => $geom) {
+            if (!is_array($geom)) {
+                return ['valid' => false, 'error' => "Invalid geometry at index $i: must be an object", 'type' => null];
+            }
+            $result = $this->validateGeoJSON($geom);
+            if (!$result['valid']) {
+                return ['valid' => false, 'error' => "Invalid geometry at index $i: " . $result['error'], 'type' => null];
+            }
+        }
+        return ['valid' => true, 'error' => null, 'type' => 'GeometryCollection'];
+    }
+
+    // ==========================================
+    // SPATIAL INDEX - GEOMETRY OPERATIONS
+    // ==========================================
+
+    /**
+     * Calculate Minimum Bounding Rectangle (MBR) for any GeoJSON geometry
+     * @param array $geometry GeoJSON geometry object
+     * @return array [minLon, minLat, maxLon, maxLat]
+     */
+    private function calculateMBR(array $geometry): array {
+        $type = $geometry['type'] ?? '';
+        $coords = $geometry['coordinates'] ?? [];
+
+        switch ($type) {
+            case 'Point':
+                return [$coords[0], $coords[1], $coords[0], $coords[1]];
+
+            case 'LineString':
+            case 'MultiPoint':
+                return $this->mbrFromPoints($coords);
+
+            case 'Polygon':
+                // Use outer ring (first ring)
+                return $this->mbrFromPoints($coords[0]);
+
+            case 'MultiLineString':
+                $allPoints = [];
+                foreach ($coords as $lineString) {
+                    $allPoints = array_merge($allPoints, $lineString);
+                }
+                return $this->mbrFromPoints($allPoints);
+
+            case 'MultiPolygon':
+                $allPoints = [];
+                foreach ($coords as $polygon) {
+                    $allPoints = array_merge($allPoints, $polygon[0]); // outer ring
+                }
+                return $this->mbrFromPoints($allPoints);
+
+            case 'GeometryCollection':
+                $mbr = null;
+                foreach ($geometry['geometries'] as $geom) {
+                    $geomMBR = $this->calculateMBR($geom);
+                    $mbr = $mbr === null ? $geomMBR : $this->mbrUnion($mbr, $geomMBR);
+                }
+                return $mbr ?? [0, 0, 0, 0];
+
+            default:
+                return [0, 0, 0, 0];
+        }
+    }
+
+    /**
+     * Calculate MBR from array of points
+     * @param array $points Array of [lon, lat] positions
+     * @return array [minLon, minLat, maxLon, maxLat]
+     */
+    private function mbrFromPoints(array $points): array {
+        if (empty($points)) {
+            return [0, 0, 0, 0];
+        }
+
+        $minLon = $maxLon = $points[0][0];
+        $minLat = $maxLat = $points[0][1];
+
+        foreach ($points as $point) {
+            $minLon = min($minLon, $point[0]);
+            $maxLon = max($maxLon, $point[0]);
+            $minLat = min($minLat, $point[1]);
+            $maxLat = max($maxLat, $point[1]);
+        }
+
+        return [$minLon, $minLat, $maxLon, $maxLat];
+    }
+
+    /**
+     * Union two MBRs
+     * @param array $mbr1 [minLon, minLat, maxLon, maxLat]
+     * @param array $mbr2 [minLon, minLat, maxLon, maxLat]
+     * @return array [minLon, minLat, maxLon, maxLat]
+     */
+    private function mbrUnion(array $mbr1, array $mbr2): array {
+        return [
+            min($mbr1[0], $mbr2[0]), // minLon
+            min($mbr1[1], $mbr2[1]), // minLat
+            max($mbr1[2], $mbr2[2]), // maxLon
+            max($mbr1[3], $mbr2[3])  // maxLat
+        ];
+    }
+
+    /**
+     * Check if two MBRs overlap
+     * @param array $mbr1 [minLon, minLat, maxLon, maxLat]
+     * @param array $mbr2 [minLon, minLat, maxLon, maxLat]
+     * @return bool
+     */
+    private function mbrOverlaps(array $mbr1, array $mbr2): bool {
+        // Check if one MBR is completely to the left, right, above, or below the other
+        if ($mbr1[2] < $mbr2[0] || $mbr2[2] < $mbr1[0]) return false; // No horizontal overlap
+        if ($mbr1[3] < $mbr2[1] || $mbr2[3] < $mbr1[1]) return false; // No vertical overlap
+        return true;
+    }
+
+    /**
+     * Calculate area of an MBR (in degrees squared)
+     * @param array $mbr [minLon, minLat, maxLon, maxLat]
+     * @return float
+     */
+    private function mbrArea(array $mbr): float {
+        $width = $mbr[2] - $mbr[0];
+        $height = $mbr[3] - $mbr[1];
+        return $width * $height;
+    }
+
+    /**
+     * Calculate enlargement needed if entry is added to an MBR
+     * @param array $mbr Existing MBR
+     * @param array $entryMBR New entry's MBR
+     * @return float Area increase
+     */
+    private function mbrEnlargement(array $mbr, array $entryMBR): float {
+        $unionMBR = $this->mbrUnion($mbr, $entryMBR);
+        return $this->mbrArea($unionMBR) - $this->mbrArea($mbr);
+    }
+
+    /**
+     * Calculate Haversine distance between two points (in meters)
+     * Uses memoization cache for repeated calculations
+     * @param float $lon1 Longitude of point 1
+     * @param float $lat1 Latitude of point 1
+     * @param float $lon2 Longitude of point 2
+     * @param float $lat2 Latitude of point 2
+     * @return float Distance in meters
+     */
+    public function haversineDistance(float $lon1, float $lat1, float $lon2, float $lat2): float {
+        // Check cache first (memoization)
+        $key = "$lon1,$lat1,$lon2,$lat2";
+        if (isset($this->distanceCache[$key])) {
+            return $this->distanceCache[$key];
+        }
+
+        $earthRadius = 6371000.0; // meters
+
+        $latDelta = deg2rad($lat2 - $lat1);
+        $lonDelta = deg2rad($lon2 - $lon1);
+
+        $a = sin($latDelta / 2) * sin($latDelta / 2) +
+             cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
+             sin($lonDelta / 2) * sin($lonDelta / 2);
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        $distance = $earthRadius * $c;
+
+        // Cache result (limit cache size to prevent memory issues)
+        if (count($this->distanceCache) < 10000) {
+            $this->distanceCache[$key] = $distance;
+        }
+
+        return $distance;
+    }
+
+    /**
+     * Clear distance cache (call after each query for memory management)
+     */
+    public function clearDistanceCache(): void {
+        $this->distanceCache = [];
+    }
+
+    /**
+     * Convert a circle (center + radius) to a bounding box
+     * @param float $lon Center longitude
+     * @param float $lat Center latitude
+     * @param float $radiusMeters Radius in meters
+     * @return array [minLon, minLat, maxLon, maxLat]
+     */
+    private function circleToBBox(float $lon, float $lat, float $radiusMeters): array {
+        // Approximate degrees per meter at this latitude
+        $latDeg = $radiusMeters / 111000.0; // 1 degree lat ~ 111 km = 111000 m
+        $lonDeg = $radiusMeters / (111000.0 * cos(deg2rad($lat)));
+
+        // Handle edge case near poles
+        if (abs($lat) > 89) {
+            $lonDeg = 360; // Cover all longitudes near poles
+        }
+
+        return [
+            max(-180, $lon - $lonDeg), // minLon
+            max(-90, $lat - $latDeg),  // minLat
+            min(180, $lon + $lonDeg),  // maxLon
+            min(90, $lat + $latDeg)    // maxLat
+        ];
+    }
+
+    /**
+     * Point-in-Polygon test using Winding Number algorithm
+     * More robust than ray casting for edge cases
+     *
+     * @param float $lon Point longitude
+     * @param float $lat Point latitude
+     * @param array $polygon GeoJSON Polygon coordinates [[[lon,lat], ...], ...]
+     * @return bool
+     */
+    private function pointInPolygon(float $lon, float $lat, array $polygon): bool {
+        // Handle GeoJSON Polygon object or raw coordinates
+        $coords = isset($polygon['coordinates']) ? $polygon['coordinates'] : $polygon;
+
+        // Check outer ring
+        if (!$this->pointInRing($lon, $lat, $coords[0])) {
+            return false;
+        }
+
+        // Check holes (if any)
+        for ($i = 1; $i < count($coords); $i++) {
+            if ($this->pointInRing($lon, $lat, $coords[$i])) {
+                return false; // Inside a hole
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if point is inside a ring using Winding Number algorithm
+     */
+    private function pointInRing(float $lon, float $lat, array $ring): bool {
+        $windingNumber = 0;
+        $n = count($ring);
+
+        for ($i = 0; $i < $n - 1; $i++) {
+            $x1 = $ring[$i][0];
+            $y1 = $ring[$i][1];
+            $x2 = $ring[$i + 1][0];
+            $y2 = $ring[$i + 1][1];
+
+            if ($y1 <= $lat) {
+                if ($y2 > $lat) {
+                    // Upward crossing
+                    if ($this->isLeftOfLine($x1, $y1, $x2, $y2, $lon, $lat) > 0) {
+                        $windingNumber++;
+                    }
+                }
+            } else {
+                if ($y2 <= $lat) {
+                    // Downward crossing
+                    if ($this->isLeftOfLine($x1, $y1, $x2, $y2, $lon, $lat) < 0) {
+                        $windingNumber--;
+                    }
+                }
+            }
+        }
+
+        return $windingNumber !== 0;
+    }
+
+    /**
+     * Determine if point is left of a line (using cross product)
+     * Returns: >0 if left, <0 if right, =0 if on line
+     */
+    private function isLeftOfLine(float $x1, float $y1, float $x2, float $y2, float $px, float $py): float {
+        return (($x2 - $x1) * ($py - $y1)) - (($px - $x1) * ($y2 - $y1));
+    }
+
+    /**
+     * Check if two line segments intersect
+     * @param array $p1 First point of segment 1 [lon, lat]
+     * @param array $p2 Second point of segment 1 [lon, lat]
+     * @param array $p3 First point of segment 2 [lon, lat]
+     * @param array $p4 Second point of segment 2 [lon, lat]
+     * @return bool
+     */
+    private function lineSegmentsIntersect(array $p1, array $p2, array $p3, array $p4): bool {
+        $d1 = $this->crossProductDirection($p3, $p4, $p1);
+        $d2 = $this->crossProductDirection($p3, $p4, $p2);
+        $d3 = $this->crossProductDirection($p1, $p2, $p3);
+        $d4 = $this->crossProductDirection($p1, $p2, $p4);
+
+        if ((($d1 > 0 && $d2 < 0) || ($d1 < 0 && $d2 > 0)) &&
+            (($d3 > 0 && $d4 < 0) || ($d3 < 0 && $d4 > 0))) {
+            return true;
+        }
+
+        // Check collinear cases
+        if ($d1 == 0 && $this->onSegment($p3, $p4, $p1)) return true;
+        if ($d2 == 0 && $this->onSegment($p3, $p4, $p2)) return true;
+        if ($d3 == 0 && $this->onSegment($p1, $p2, $p3)) return true;
+        if ($d4 == 0 && $this->onSegment($p1, $p2, $p4)) return true;
+
+        return false;
+    }
+
+    /**
+     * Cross product direction calculation
+     */
+    private function crossProductDirection(array $p1, array $p2, array $p3): float {
+        return ($p3[0] - $p1[0]) * ($p2[1] - $p1[1]) - ($p2[0] - $p1[0]) * ($p3[1] - $p1[1]);
+    }
+
+    /**
+     * Check if point p is on segment p1-p2
+     */
+    private function onSegment(array $p1, array $p2, array $p): bool {
+        return min($p1[0], $p2[0]) <= $p[0] && $p[0] <= max($p1[0], $p2[0]) &&
+               min($p1[1], $p2[1]) <= $p[1] && $p[1] <= max($p1[1], $p2[1]);
+    }
+
+    /**
+     * Check if two polygons intersect
+     * @param array $poly1 First polygon coordinates
+     * @param array $poly2 Second polygon coordinates
+     * @return bool
+     */
+    private function polygonsIntersect(array $poly1, array $poly2): bool {
+        // Handle GeoJSON Polygon objects or raw coordinates
+        $coords1 = isset($poly1['coordinates']) ? $poly1['coordinates'] : $poly1;
+        $coords2 = isset($poly2['coordinates']) ? $poly2['coordinates'] : $poly2;
+
+        // 1. Quick MBR rejection test
+        $mbr1 = $this->mbrFromPoints($coords1[0]);
+        $mbr2 = $this->mbrFromPoints($coords2[0]);
+        if (!$this->mbrOverlaps($mbr1, $mbr2)) {
+            return false;
+        }
+
+        // 2. Check if any vertex of poly1 is inside poly2
+        foreach ($coords1[0] as $point) {
+            if ($this->pointInPolygon($point[0], $point[1], $coords2)) {
+                return true;
+            }
+        }
+
+        // 3. Check if any vertex of poly2 is inside poly1
+        foreach ($coords2[0] as $point) {
+            if ($this->pointInPolygon($point[0], $point[1], $coords1)) {
+                return true;
+            }
+        }
+
+        // 4. Check edge intersections
+        $ring1 = $coords1[0];
+        $ring2 = $coords2[0];
+
+        for ($i = 0; $i < count($ring1) - 1; $i++) {
+            for ($j = 0; $j < count($ring2) - 1; $j++) {
+                if ($this->lineSegmentsIntersect($ring1[$i], $ring1[$i + 1], $ring2[$j], $ring2[$j + 1])) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Get centroid of a geometry (for distance calculations)
+     * Uses caching for repeated geometry lookups
+     * @param array $geometry GeoJSON geometry
+     * @return array [lon, lat]
+     */
+    private function getGeometryCentroid(array $geometry): array {
+        // Check cache first (use JSON hash as key)
+        $cacheKey = md5(json_encode($geometry));
+        if (isset($this->centroidCache[$cacheKey])) {
+            return $this->centroidCache[$cacheKey];
+        }
+
+        $type = $geometry['type'] ?? '';
+        $coords = $geometry['coordinates'] ?? [];
+        $result = null;
+
+        switch ($type) {
+            case 'Point':
+                $result = [$coords[0], $coords[1]];
+                break;
+
+            case 'LineString':
+            case 'MultiPoint':
+                $sumLon = $sumLat = 0;
+                foreach ($coords as $point) {
+                    $sumLon += $point[0];
+                    $sumLat += $point[1];
+                }
+                $n = count($coords);
+                $result = [$sumLon / $n, $sumLat / $n];
+                break;
+
+            case 'Polygon':
+                // Centroid of outer ring
+                $ring = $coords[0];
+                $sumLon = $sumLat = 0;
+                $n = count($ring) - 1; // Exclude closing point
+                for ($i = 0; $i < $n; $i++) {
+                    $sumLon += $ring[$i][0];
+                    $sumLat += $ring[$i][1];
+                }
+                $result = [$sumLon / $n, $sumLat / $n];
+                break;
+
+            default:
+                // For complex types, use MBR center
+                $mbr = $this->calculateMBR($geometry);
+                $result = [($mbr[0] + $mbr[2]) / 2, ($mbr[1] + $mbr[3]) / 2];
+        }
+
+        // Cache result (limit size)
+        if (count($this->centroidCache) < 5000) {
+            $this->centroidCache[$cacheKey] = $result;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Clear centroid cache
+     */
+    public function clearCentroidCache(): void {
+        $this->centroidCache = [];
+    }
+
+    // ==========================================
+    // SPATIAL INDEX - R-TREE ENGINE
+    // ==========================================
+
+    /**
+     * Get path to spatial index file
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param int|null $shardId Shard ID (null for non-sharded)
+     * @return string File path
+     */
+    private function getSpatialIndexPath(string $dbname, string $field, ?int $shardId = null): string {
+        $hash = $this->hashDBName($dbname);
+        $field = preg_replace('/[^a-zA-Z0-9_]/', '', $field);
+
+        if ($shardId !== null) {
+            return $this->dbDir . $hash . '_s' . $shardId . '.nonedb.sidx.' . $field;
+        }
+        return $this->dbDir . $hash . '.nonedb.sidx.' . $field;
+    }
+
+    /**
+     * Get path to global spatial index file (shard MBR metadata)
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @return string File path
+     */
+    private function getGlobalSpatialIndexPath(string $dbname, string $field): string {
+        $hash = $this->hashDBName($dbname);
+        $field = preg_replace('/[^a-zA-Z0-9_]/', '', $field);
+        return $this->dbDir . $hash . '.nonedb.gsidx.' . $field;
+    }
+
+    /**
+     * Get spatial index cache key
+     */
+    private function getSpatialIndexCacheKey(string $dbname, string $field, ?int $shardId = null): string {
+        if ($shardId !== null) {
+            return $dbname . ':' . $field . ':s' . $shardId;
+        }
+        return $dbname . ':' . $field;
+    }
+
+    /**
+     * Read spatial index from cache or disk
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param int|null $shardId Shard ID
+     * @return array|null Index data or null if not exists
+     */
+    private function readSpatialIndex(string $dbname, string $field, ?int $shardId = null): ?array {
+        $cacheKey = $this->getSpatialIndexCacheKey($dbname, $field, $shardId);
+
+        // Check cache first
+        if (isset($this->spatialIndexCache[$cacheKey])) {
+            return $this->spatialIndexCache[$cacheKey];
+        }
+
+        $path = $this->getSpatialIndexPath($dbname, $field, $shardId);
+        if (!file_exists($path)) {
+            return null;
+        }
+
+        $content = $this->atomicRead($path);
+        if ($content === false) {
+            return null;
+        }
+
+        $index = json_decode($content, true);
+        if ($index === null) {
+            return null;
+        }
+
+        // Cache it
+        $this->spatialIndexCache[$cacheKey] = $index;
+
+        return $index;
+    }
+
+    /**
+     * Write spatial index to disk and update cache
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param array $index Index data
+     * @param int|null $shardId Shard ID
+     * @return bool Success
+     */
+    private function writeSpatialIndex(string $dbname, string $field, array $index, ?int $shardId = null): bool {
+        $path = $this->getSpatialIndexPath($dbname, $field, $shardId);
+        $index['updated'] = time();
+
+        $result = $this->atomicWrite($path, json_encode($index));
+
+        if ($result) {
+            $cacheKey = $this->getSpatialIndexCacheKey($dbname, $field, $shardId);
+            $this->spatialIndexCache[$cacheKey] = $index;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Mark spatial index as dirty (for batch write pattern)
+     * Updates cache immediately but defers disk write
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param array $index Updated index data
+     * @param int|null $shardId Shard ID
+     */
+    private function markSpatialIndexDirty(string $dbname, string $field, array $index, ?int $shardId = null): void {
+        $cacheKey = $this->getSpatialIndexCacheKey($dbname, $field, $shardId);
+
+        // Update cache immediately
+        $this->spatialIndexCache[$cacheKey] = $index;
+
+        // Mark as dirty for later flush
+        $this->dirtySpatialIndexes[$cacheKey] = [
+            'dbname' => $dbname,
+            'field' => $field,
+            'shardId' => $shardId
+        ];
+    }
+
+    /**
+     * Flush all dirty spatial indexes to disk
+     * Call this after batch operations for optimal I/O performance
+     * @return int Number of indexes flushed
+     */
+    public function flushSpatialIndexes(): int {
+        $flushed = 0;
+
+        foreach ($this->dirtySpatialIndexes as $cacheKey => $meta) {
+            if (isset($this->spatialIndexCache[$cacheKey])) {
+                $this->writeSpatialIndex(
+                    $meta['dbname'],
+                    $meta['field'],
+                    $this->spatialIndexCache[$cacheKey],
+                    $meta['shardId']
+                );
+                $flushed++;
+            }
+        }
+
+        $this->dirtySpatialIndexes = [];
+        return $flushed;
+    }
+
+    /**
+     * Read global spatial index (shard MBR metadata)
+     */
+    private function readGlobalSpatialIndex(string $dbname, string $field): ?array {
+        $cacheKey = 'gsidx:' . $dbname . ':' . $field;
+
+        if (isset($this->globalSpatialIndexCache[$cacheKey])) {
+            return $this->globalSpatialIndexCache[$cacheKey];
+        }
+
+        $path = $this->getGlobalSpatialIndexPath($dbname, $field);
+        if (!file_exists($path)) {
+            return null;
+        }
+
+        $content = $this->atomicRead($path);
+        if ($content === false) {
+            return null;
+        }
+
+        $index = json_decode($content, true);
+        if ($index === null) {
+            return null;
+        }
+
+        $this->globalSpatialIndexCache[$cacheKey] = $index;
+        return $index;
+    }
+
+    /**
+     * Write global spatial index
+     */
+    private function writeGlobalSpatialIndex(string $dbname, string $field, array $index): bool {
+        $path = $this->getGlobalSpatialIndexPath($dbname, $field);
+        $index['updated'] = time();
+
+        $result = $this->atomicWrite($path, json_encode($index));
+
+        if ($result) {
+            $cacheKey = 'gsidx:' . $dbname . ':' . $field;
+            $this->globalSpatialIndexCache[$cacheKey] = $index;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Create a new empty R-tree index structure
+     * @param string $field Field name
+     * @return array Empty index structure
+     */
+    private function createEmptyRTreeIndex(string $field): array {
+        return [
+            'v' => 2,
+            'field' => $field,
+            'type' => 'rtree',
+            'nodeSize' => $this->rtreeNodeSize,
+            'created' => time(),
+            'updated' => time(),
+            'rootId' => 0,
+            'nextNodeId' => 1,
+            'nodes' => [
+                '0' => [
+                    'isLeaf' => true,
+                    'mbr' => null,
+                    'entries' => [],
+                    'parent' => null
+                ]
+            ]
+        ];
+    }
+
+    /**
+     * Insert an entry into R-tree
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param int $key Record key
+     * @param array $geometry GeoJSON geometry
+     * @param int|null $shardId Shard ID
+     * @return bool Success
+     */
+    private function rtreeInsert(string $dbname, string $field, int $key, array $geometry, ?int $shardId = null): bool {
+        $index = $this->readSpatialIndex($dbname, $field, $shardId);
+
+        if ($index === null) {
+            $index = $this->createEmptyRTreeIndex($field);
+        }
+
+        $mbr = $this->calculateMBR($geometry);
+        $entry = [
+            'key' => $key,
+            'mbr' => $mbr,
+            'type' => $geometry['type']
+        ];
+
+        // Find leaf node to insert
+        $leafId = $this->rtreeChooseLeaf($index, $mbr);
+        $leaf = &$index['nodes'][$leafId];
+
+        // Add entry to leaf
+        $leaf['entries'][] = $entry;
+
+        // Update leaf MBR
+        $leaf['mbr'] = $leaf['mbr'] === null ? $mbr : $this->mbrUnion($leaf['mbr'], $mbr);
+
+        // Check if split is needed
+        if (count($leaf['entries']) > $index['nodeSize']) {
+            $this->rtreeSplitNode($index, $leafId);
+        }
+
+        // Propagate MBR changes up the tree
+        $this->rtreeAdjustTree($index, $leafId);
+
+        // Mark dirty for batch write (instead of immediate write)
+        $this->markSpatialIndexDirty($dbname, $field, $index, $shardId);
+        return true;
+    }
+
+    /**
+     * Choose the best leaf node for inserting an entry
+     * @param array $index R-tree index
+     * @param array $entryMBR Entry's MBR
+     * @return string Leaf node ID
+     */
+    private function rtreeChooseLeaf(array &$index, array $entryMBR): string {
+        $nodeId = (string)$index['rootId'];
+
+        while (!$index['nodes'][$nodeId]['isLeaf']) {
+            $node = $index['nodes'][$nodeId];
+            $minEnlargement = PHP_FLOAT_MAX;
+            $bestChild = null;
+
+            foreach ($node['children'] as $childId) {
+                $childMBR = $index['nodes'][$childId]['mbr'];
+                if ($childMBR === null) {
+                    $bestChild = $childId;
+                    break;
+                }
+
+                $enlargement = $this->mbrEnlargement($childMBR, $entryMBR);
+
+                if ($enlargement < $minEnlargement) {
+                    $minEnlargement = $enlargement;
+                    $bestChild = $childId;
+                } elseif ($enlargement == $minEnlargement) {
+                    // Tie-breaker: choose smaller area
+                    if ($this->mbrArea($childMBR) < $this->mbrArea($index['nodes'][$bestChild]['mbr'] ?? [0,0,0,0])) {
+                        $bestChild = $childId;
+                    }
+                }
+            }
+
+            $nodeId = (string)$bestChild;
+        }
+
+        return $nodeId;
+    }
+
+    /**
+     * Split an overflowing node using Linear Split algorithm (O(n) seed selection)
+     * @param array &$index R-tree index (modified in place)
+     * @param string $nodeId Node to split
+     */
+    private function rtreeSplitNode(array &$index, string $nodeId): void {
+        $node = $index['nodes'][$nodeId];
+        $isLeaf = $node['isLeaf'];
+        $entries = $isLeaf ? $node['entries'] : $node['children'];
+        $n = count($entries);
+
+        if ($n <= $index['nodeSize']) {
+            return; // No split needed
+        }
+
+        // Linear Split: O(n) seed selection using maximum separation
+        // Find extremes along each dimension in single pass
+        $minLon = $maxLon = $minLat = $maxLat = null;
+        $minLonIdx = $maxLonIdx = $minLatIdx = $maxLatIdx = 0;
+        $globalMinLon = PHP_FLOAT_MAX;
+        $globalMaxLon = -PHP_FLOAT_MAX;
+        $globalMinLat = PHP_FLOAT_MAX;
+        $globalMaxLat = -PHP_FLOAT_MAX;
+
+        for ($i = 0; $i < $n; $i++) {
+            $mbr = $isLeaf ? $entries[$i]['mbr'] : $index['nodes'][$entries[$i]]['mbr'];
+            if ($mbr === null) continue;
+
+            // Track global bounds for normalization
+            $globalMinLon = min($globalMinLon, $mbr[0]);
+            $globalMaxLon = max($globalMaxLon, $mbr[2]);
+            $globalMinLat = min($globalMinLat, $mbr[1]);
+            $globalMaxLat = max($globalMaxLat, $mbr[3]);
+
+            // Find entry with highest low-side (minLon, minLat)
+            if ($minLon === null || $mbr[0] > $minLon) {
+                $minLon = $mbr[0];
+                $minLonIdx = $i;
+            }
+            if ($minLat === null || $mbr[1] > $minLat) {
+                $minLat = $mbr[1];
+                $minLatIdx = $i;
+            }
+
+            // Find entry with lowest high-side (maxLon, maxLat)
+            if ($maxLon === null || $mbr[2] < $maxLon) {
+                $maxLon = $mbr[2];
+                $maxLonIdx = $i;
+            }
+            if ($maxLat === null || $mbr[3] < $maxLat) {
+                $maxLat = $mbr[3];
+                $maxLatIdx = $i;
+            }
+        }
+
+        // Calculate normalized separation for each dimension
+        $lonWidth = $globalMaxLon - $globalMinLon;
+        $latWidth = $globalMaxLat - $globalMinLat;
+
+        $lonSep = ($lonWidth > 0) ? ($minLon - $maxLon) / $lonWidth : 0;
+        $latSep = ($latWidth > 0) ? ($minLat - $maxLat) / $latWidth : 0;
+
+        // Choose seeds from dimension with greatest separation
+        if ($lonSep >= $latSep) {
+            $seed1 = $minLonIdx;
+            $seed2 = $maxLonIdx;
+        } else {
+            $seed1 = $minLatIdx;
+            $seed2 = $maxLatIdx;
+        }
+
+        // Ensure seeds are different
+        if ($seed1 === $seed2) {
+            $seed2 = ($seed1 + 1) % $n;
+        }
+
+        // Initialize two groups
+        $group1 = [$entries[$seed1]];
+        $group2 = [$entries[$seed2]];
+        $mbr1 = $isLeaf ? $entries[$seed1]['mbr'] : $index['nodes'][$entries[$seed1]]['mbr'];
+        $mbr2 = $isLeaf ? $entries[$seed2]['mbr'] : $index['nodes'][$entries[$seed2]]['mbr'];
+
+        // Distribute remaining entries
+        $minEntries = max(1, (int)($index['nodeSize'] * 0.4)); // Minimum 40% fill
+
+        for ($i = 0; $i < count($entries); $i++) {
+            if ($i == $seed1 || $i == $seed2) continue;
+
+            $entry = $entries[$i];
+            $entryMBR = $isLeaf ? $entry['mbr'] : $index['nodes'][$entry]['mbr'];
+
+            if ($entryMBR === null) {
+                // Assign to smaller group
+                if (count($group1) <= count($group2)) {
+                    $group1[] = $entry;
+                } else {
+                    $group2[] = $entry;
+                }
+                continue;
+            }
+
+            // Check if one group needs all remaining entries
+            $remaining = count($entries) - $i - 1;
+            if (count($group1) + $remaining <= $minEntries) {
+                $group1[] = $entry;
+                $mbr1 = $mbr1 === null ? $entryMBR : $this->mbrUnion($mbr1, $entryMBR);
+                continue;
+            }
+            if (count($group2) + $remaining <= $minEntries) {
+                $group2[] = $entry;
+                $mbr2 = $mbr2 === null ? $entryMBR : $this->mbrUnion($mbr2, $entryMBR);
+                continue;
+            }
+
+            // Choose group with least enlargement
+            $enlargement1 = $mbr1 === null ? 0 : $this->mbrEnlargement($mbr1, $entryMBR);
+            $enlargement2 = $mbr2 === null ? 0 : $this->mbrEnlargement($mbr2, $entryMBR);
+
+            if ($enlargement1 < $enlargement2 ||
+                ($enlargement1 == $enlargement2 && count($group1) <= count($group2))) {
+                $group1[] = $entry;
+                $mbr1 = $mbr1 === null ? $entryMBR : $this->mbrUnion($mbr1, $entryMBR);
+            } else {
+                $group2[] = $entry;
+                $mbr2 = $mbr2 === null ? $entryMBR : $this->mbrUnion($mbr2, $entryMBR);
+            }
+        }
+
+        // Create new node for group2
+        $newNodeId = (string)$index['nextNodeId']++;
+
+        // Get current parent (will be used for both nodes after split)
+        $currentParent = $index['nodes'][$nodeId]['parent'] ?? null;
+
+        if ($isLeaf) {
+            // Update original node with group1
+            $index['nodes'][$nodeId]['entries'] = $group1;
+            $index['nodes'][$nodeId]['mbr'] = $mbr1;
+
+            // Create new leaf node with group2 (same parent as original)
+            $index['nodes'][$newNodeId] = [
+                'isLeaf' => true,
+                'mbr' => $mbr2,
+                'entries' => $group2,
+                'parent' => $currentParent
+            ];
+        } else {
+            // Update original node with group1
+            $index['nodes'][$nodeId]['children'] = $group1;
+            $index['nodes'][$nodeId]['mbr'] = $mbr1;
+
+            // Create new internal node with group2 (same parent as original)
+            $index['nodes'][$newNodeId] = [
+                'isLeaf' => false,
+                'mbr' => $mbr2,
+                'children' => $group2,
+                'parent' => $currentParent
+            ];
+
+            // Update parent pointers of children in group2
+            foreach ($group2 as $childId) {
+                $index['nodes'][$childId]['parent'] = $newNodeId;
+            }
+
+            // Ensure children in group1 point to original node
+            foreach ($group1 as $childId) {
+                $index['nodes'][$childId]['parent'] = $nodeId;
+            }
+        }
+
+        // Handle root split
+        if ($nodeId == (string)$index['rootId']) {
+            $newRootId = (string)$index['nextNodeId']++;
+            $index['nodes'][$newRootId] = [
+                'isLeaf' => false,
+                'mbr' => $mbr1 !== null && $mbr2 !== null ? $this->mbrUnion($mbr1, $mbr2) : ($mbr1 ?? $mbr2),
+                'children' => [$nodeId, $newNodeId],
+                'parent' => null
+            ];
+            $index['rootId'] = (int)$newRootId;
+
+            // Update parent pointers of the two children
+            $index['nodes'][$nodeId]['parent'] = $newRootId;
+            $index['nodes'][$newNodeId]['parent'] = $newRootId;
+        } else {
+            // Use parent pointer directly (O(1) instead of O(n) lookup)
+            $parentId = $currentParent;
+            if ($parentId !== null) {
+                $index['nodes'][$parentId]['children'][] = $newNodeId;
+                // Check if parent needs split
+                if (count($index['nodes'][$parentId]['children']) > $index['nodeSize']) {
+                    $this->rtreeSplitNode($index, $parentId);
+                }
+            }
+        }
+    }
+
+    /**
+     * Find parent node of a given node
+     * O(1) lookup using parent pointer
+     */
+    private function rtreeFindParent(array &$index, string $nodeId): ?string {
+        return $index['nodes'][$nodeId]['parent'] ?? null;
+    }
+
+    /**
+     * Adjust MBRs up the tree after insert/delete
+     * Uses parent pointers for O(1) traversal
+     */
+    private function rtreeAdjustTree(array &$index, string $nodeId): void {
+        $parentId = $index['nodes'][$nodeId]['parent'] ?? null;
+
+        while ($parentId !== null) {
+            $parent = &$index['nodes'][$parentId];
+            $newMBR = null;
+
+            foreach ($parent['children'] as $childId) {
+                $childMBR = $index['nodes'][$childId]['mbr'];
+                if ($childMBR !== null) {
+                    $newMBR = $newMBR === null ? $childMBR : $this->mbrUnion($newMBR, $childMBR);
+                }
+            }
+
+            $parent['mbr'] = $newMBR;
+            $parentId = $parent['parent'] ?? null;
+        }
+    }
+
+    /**
+     * Delete an entry from R-tree
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param int $key Record key to delete
+     * @param int|null $shardId Shard ID
+     * @return bool Success
+     */
+    private function rtreeDelete(string $dbname, string $field, int $key, ?int $shardId = null): bool {
+        $index = $this->readSpatialIndex($dbname, $field, $shardId);
+
+        if ($index === null) {
+            return false;
+        }
+
+        // Find and remove the entry
+        $found = false;
+        foreach ($index['nodes'] as $nodeId => &$node) {
+            if (!$node['isLeaf']) continue;
+
+            foreach ($node['entries'] as $i => $entry) {
+                if ($entry['key'] === $key) {
+                    array_splice($node['entries'], $i, 1);
+                    $found = true;
+
+                    // Recalculate node MBR
+                    if (empty($node['entries'])) {
+                        $node['mbr'] = null;
+                    } else {
+                        $node['mbr'] = null;
+                        foreach ($node['entries'] as $e) {
+                            $node['mbr'] = $node['mbr'] === null ? $e['mbr'] : $this->mbrUnion($node['mbr'], $e['mbr']);
+                        }
+                    }
+
+                    // Adjust tree
+                    $this->rtreeAdjustTree($index, $nodeId);
+                    break 2;
+                }
+            }
+        }
+
+        if (!$found) {
+            return false;
+        }
+
+        // Condense tree (remove empty nodes)
+        $this->rtreeCondenseTree($index);
+
+        // Mark dirty for batch write (instead of immediate write)
+        $this->markSpatialIndexDirty($dbname, $field, $index, $shardId);
+        return true;
+    }
+
+    /**
+     * Condense tree by removing empty nodes
+     * Uses parent pointers for O(1) traversal
+     */
+    private function rtreeCondenseTree(array &$index): void {
+        // Remove empty leaf nodes (except root)
+        $nodesToRemove = [];
+
+        foreach ($index['nodes'] as $nodeId => $node) {
+            if ($nodeId == (string)$index['rootId']) continue;
+
+            if ($node['isLeaf'] && empty($node['entries'])) {
+                $nodesToRemove[] = $nodeId;
+            } elseif (!$node['isLeaf'] && empty($node['children'])) {
+                $nodesToRemove[] = $nodeId;
+            }
+        }
+
+        foreach ($nodesToRemove as $nodeId) {
+            // Use parent pointer directly (O(1))
+            $parentId = $index['nodes'][$nodeId]['parent'] ?? null;
+            if ($parentId !== null) {
+                $children = &$index['nodes'][$parentId]['children'];
+                $children = array_values(array_filter($children, fn($c) => $c != $nodeId));
+            }
+
+            unset($index['nodes'][$nodeId]);
+        }
+
+        // If root has only one child, make that child the new root
+        $root = $index['nodes'][(string)$index['rootId']];
+        if (!$root['isLeaf'] && count($root['children'] ?? []) === 1) {
+            $newRootId = $root['children'][0];
+            unset($index['nodes'][(string)$index['rootId']]);
+            $index['rootId'] = (int)$newRootId;
+            // Set new root's parent to null
+            $index['nodes'][$newRootId]['parent'] = null;
+        }
+    }
+
+    /**
+     * Search R-tree for entries overlapping with given MBR
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param array $searchMBR Search MBR [minLon, minLat, maxLon, maxLat]
+     * @param int|null $shardId Shard ID
+     * @return array Array of matching entry keys
+     */
+    private function rtreeSearchMBR(string $dbname, string $field, array $searchMBR, ?int $shardId = null): array {
+        $index = $this->readSpatialIndex($dbname, $field, $shardId);
+
+        if ($index === null) {
+            return [];
+        }
+
+        $results = [];
+        $this->rtreeSearchNode($index, (string)$index['rootId'], $searchMBR, $results);
+
+        return $results;
+    }
+
+    /**
+     * Recursive search helper
+     */
+    private function rtreeSearchNode(array &$index, string $nodeId, array $searchMBR, array &$results): void {
+        $node = $index['nodes'][$nodeId];
+
+        // Skip if node MBR doesn't overlap search MBR
+        if ($node['mbr'] !== null && !$this->mbrOverlaps($node['mbr'], $searchMBR)) {
+            return;
+        }
+
+        if ($node['isLeaf']) {
+            // Check each entry
+            foreach ($node['entries'] as $entry) {
+                if ($this->mbrOverlaps($entry['mbr'], $searchMBR)) {
+                    $results[] = $entry['key'];
+                }
+            }
+        } else {
+            // Search children
+            foreach ($node['children'] as $childId) {
+                $this->rtreeSearchNode($index, (string)$childId, $searchMBR, $results);
+            }
+        }
+    }
+
+    /**
+     * Get all entries from spatial index
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param int|null $shardId Shard ID
+     * @return array Array of all entries
+     */
+    private function rtreeGetAllEntries(string $dbname, string $field, ?int $shardId = null): array {
+        $index = $this->readSpatialIndex($dbname, $field, $shardId);
+
+        if ($index === null) {
+            return [];
+        }
+
+        $entries = [];
+        foreach ($index['nodes'] as $node) {
+            if ($node['isLeaf'] && !empty($node['entries'])) {
+                foreach ($node['entries'] as $entry) {
+                    $entries[] = $entry;
+                }
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Check if a spatial index exists
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @param int|null $shardId Shard ID
+     * @return bool
+     */
+    public function hasSpatialIndex(string $dbname, string $field, ?int $shardId = null): bool {
+        $dbname = $this->sanitizeDbName($dbname);
+        $path = $this->getSpatialIndexPath($dbname, $field, $shardId);
+        return file_exists($path);
+    }
+
+    /**
+     * Get list of spatial indexed fields for a database
+     * @param string $dbname Database name
+     * @param int|null $shardId Shard ID
+     * @return array Field names
+     */
+    private function getSpatialIndexedFields(string $dbname, ?int $shardId = null): array {
+        $hash = $this->hashDBName($dbname);
+
+        if ($shardId !== null) {
+            $pattern = $this->dbDir . $hash . '_s' . $shardId . '.nonedb.sidx.*';
+        } else {
+            $pattern = $this->dbDir . $hash . '.nonedb.sidx.*';
+        }
+
+        $files = glob($pattern);
+        $fields = [];
+
+        foreach ($files as $file) {
+            // Extract field name from filename
+            $parts = explode('.sidx.', basename($file));
+            if (count($parts) >= 2) {
+                $fields[] = $parts[1];
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Invalidate spatial index cache
+     */
+    private function invalidateSpatialIndexCache(string $dbname, string $field, ?int $shardId = null): void {
+        $cacheKey = $this->getSpatialIndexCacheKey($dbname, $field, $shardId);
+        unset($this->spatialIndexCache[$cacheKey]);
+    }
+
+    // ==========================================
+    // SPATIAL INDEX - PUBLIC API
+    // ==========================================
+
+    /**
+     * Create a spatial index on a GeoJSON field
+     * @param string $dbname Database name
+     * @param string $field Field name containing GeoJSON
+     * @param array $options Options ['nodeSize' => 16]
+     * @return array ['success' => bool, 'indexed' => int, 'error' => ?string]
+     */
+    public function createSpatialIndex(string $dbname, string $field, array $options = []): array {
+        $dbname = $this->sanitizeDbName($dbname);
+
+        if (!$this->spatialIndexEnabled) {
+            return ['success' => false, 'indexed' => 0, 'error' => 'Spatial indexing is disabled'];
+        }
+
+        // Check if index already exists
+        if ($this->hasSpatialIndex($dbname, $field)) {
+            return ['success' => false, 'indexed' => 0, 'error' => "Spatial index already exists for field '$field'"];
+        }
+
+        // Handle sharded databases
+        if ($this->isSharded($dbname)) {
+            return $this->createSpatialIndexSharded($dbname, $field, $options);
+        }
+
+        // Non-sharded: flush buffer and read all records
+        if ($this->bufferEnabled) {
+            $bufferPath = $this->getBufferPath($dbname);
+            if ($this->hasBuffer($bufferPath)) {
+                $this->flushBufferToMain($dbname);
+            }
+        }
+
+        $records = $this->find($dbname);
+        if (!is_array($records)) {
+            return ['success' => false, 'indexed' => 0, 'error' => 'Failed to read records'];
+        }
+
+        // Create new index
+        $index = $this->createEmptyRTreeIndex($field);
+        if (isset($options['nodeSize'])) {
+            $index['nodeSize'] = (int)$options['nodeSize'];
+        }
+
+        $indexed = 0;
+        foreach ($records as $record) {
+            if (!isset($record[$field]) || !is_array($record[$field])) {
+                continue;
+            }
+
+            $geometry = $record[$field];
+            $validation = $this->validateGeoJSON($geometry);
+            if (!$validation['valid']) {
+                continue;
+            }
+
+            $key = $record['key'];
+            $mbr = $this->calculateMBR($geometry);
+
+            $entry = [
+                'key' => $key,
+                'mbr' => $mbr,
+                'type' => $geometry['type']
+            ];
+
+            // Find leaf and insert
+            $leafId = $this->rtreeChooseLeaf($index, $mbr);
+            $index['nodes'][$leafId]['entries'][] = $entry;
+            $index['nodes'][$leafId]['mbr'] = $index['nodes'][$leafId]['mbr'] === null
+                ? $mbr
+                : $this->mbrUnion($index['nodes'][$leafId]['mbr'], $mbr);
+
+            // Split if needed
+            if (count($index['nodes'][$leafId]['entries']) > $index['nodeSize']) {
+                $this->rtreeSplitNode($index, $leafId);
+            }
+
+            $this->rtreeAdjustTree($index, $leafId);
+            $indexed++;
+        }
+
+        $this->writeSpatialIndex($dbname, $field, $index, null);
+
+        return ['success' => true, 'indexed' => $indexed, 'error' => null];
+    }
+
+    /**
+     * Create spatial index for sharded database
+     */
+    private function createSpatialIndexSharded(string $dbname, string $field, array $options = []): array {
+        $meta = $this->getCachedMeta($dbname);
+        if (!isset($meta['shards'])) {
+            return ['success' => false, 'indexed' => 0, 'error' => 'No shards found'];
+        }
+
+        $totalIndexed = 0;
+        $globalIndex = [
+            'v' => 1,
+            'field' => $field,
+            'shardMBRs' => []
+        ];
+
+        foreach ($meta['shards'] as $shard) {
+            $shardId = $shard['id'];
+
+            // Flush shard buffer if buffering enabled
+            if ($this->bufferEnabled) {
+                $this->flushShardBuffer($dbname, $shardId);
+            }
+
+            // Create index for this shard
+            $index = $this->createEmptyRTreeIndex($field);
+            if (isset($options['nodeSize'])) {
+                $index['nodeSize'] = (int)$options['nodeSize'];
+            }
+
+            $records = $this->findShard($dbname, $shardId, []);
+            $shardMBR = null;
+
+            foreach ($records as $record) {
+                if (!isset($record[$field]) || !is_array($record[$field])) {
+                    continue;
+                }
+
+                $geometry = $record[$field];
+                $validation = $this->validateGeoJSON($geometry);
+                if (!$validation['valid']) {
+                    continue;
+                }
+
+                $key = $record['key'];
+                $mbr = $this->calculateMBR($geometry);
+
+                $entry = [
+                    'key' => $key,
+                    'mbr' => $mbr,
+                    'type' => $geometry['type']
+                ];
+
+                $leafId = $this->rtreeChooseLeaf($index, $mbr);
+                $index['nodes'][$leafId]['entries'][] = $entry;
+                $index['nodes'][$leafId]['mbr'] = $index['nodes'][$leafId]['mbr'] === null
+                    ? $mbr
+                    : $this->mbrUnion($index['nodes'][$leafId]['mbr'], $mbr);
+
+                if (count($index['nodes'][$leafId]['entries']) > $index['nodeSize']) {
+                    $this->rtreeSplitNode($index, $leafId);
+                }
+
+                $this->rtreeAdjustTree($index, $leafId);
+
+                // Track shard MBR
+                $shardMBR = $shardMBR === null ? $mbr : $this->mbrUnion($shardMBR, $mbr);
+                $totalIndexed++;
+            }
+
+            $this->writeSpatialIndex($dbname, $field, $index, $shardId);
+
+            // Add to global index
+            if ($shardMBR !== null) {
+                $globalIndex['shardMBRs'][(string)$shardId] = $shardMBR;
+            }
+        }
+
+        // Write global spatial index
+        $this->writeGlobalSpatialIndex($dbname, $field, $globalIndex);
+
+        return ['success' => true, 'indexed' => $totalIndexed, 'error' => null];
+    }
+
+    /**
+     * Drop a spatial index
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @return array ['success' => bool, 'error' => ?string]
+     */
+    public function dropSpatialIndex(string $dbname, string $field): array {
+        $dbname = $this->sanitizeDbName($dbname);
+
+        if ($this->isSharded($dbname)) {
+            $meta = $this->getCachedMeta($dbname);
+            if (isset($meta['shards'])) {
+                foreach ($meta['shards'] as $shard) {
+                    $path = $this->getSpatialIndexPath($dbname, $field, $shard['id']);
+                    if (file_exists($path)) {
+                        @unlink($path);
+                    }
+                    $this->invalidateSpatialIndexCache($dbname, $field, $shard['id']);
+                }
+            }
+            // Drop global index
+            $globalPath = $this->getGlobalSpatialIndexPath($dbname, $field);
+            if (file_exists($globalPath)) {
+                @unlink($globalPath);
+            }
+            unset($this->globalSpatialIndexCache['gsidx:' . $dbname . ':' . $field]);
+        } else {
+            $path = $this->getSpatialIndexPath($dbname, $field, null);
+            if (file_exists($path)) {
+                @unlink($path);
+            }
+            $this->invalidateSpatialIndexCache($dbname, $field, null);
+        }
+
+        return ['success' => true, 'error' => null];
+    }
+
+    /**
+     * Get list of spatial indexes for a database
+     * @param string $dbname Database name
+     * @return array List of indexed field names
+     */
+    public function getSpatialIndexes(string $dbname): array {
+        $dbname = $this->sanitizeDbName($dbname);
+
+        if ($this->isSharded($dbname)) {
+            // Check global indexes
+            $hash = $this->hashDBName($dbname);
+            $pattern = $this->dbDir . $hash . '.nonedb.gsidx.*';
+            $files = glob($pattern);
+            $fields = [];
+
+            foreach ($files as $file) {
+                $parts = explode('.gsidx.', basename($file));
+                if (count($parts) >= 2) {
+                    $fields[] = $parts[1];
+                }
+            }
+
+            return $fields;
+        }
+
+        return $this->getSpatialIndexedFields($dbname, null);
+    }
+
+    /**
+     * Rebuild a spatial index
+     * @param string $dbname Database name
+     * @param string $field Field name
+     * @return array Result from createSpatialIndex
+     */
+    public function rebuildSpatialIndex(string $dbname, string $field): array {
+        $this->dropSpatialIndex($dbname, $field);
+        return $this->createSpatialIndex($dbname, $field);
+    }
+
+    /**
+     * Find records within a distance from a point
+     * @param string $dbname Database name
+     * @param string $field GeoJSON field name
+     * @param float $lon Center longitude
+     * @param float $lat Center latitude
+     * @param float $distanceMeters Distance in meters
+     * @param array $options ['includeDistance' => false]
+     * @return array Matching records (with _distance in meters if includeDistance=true)
+     */
+    public function withinDistance(string $dbname, string $field, float $lon, float $lat, float $distanceMeters, array $options = []): array {
+        $dbname = $this->sanitizeDbName($dbname);
+        $includeDistance = $options['includeDistance'] ?? false;
+
+        // Convert circle to bounding box for R-tree search
+        $searchMBR = $this->circleToBBox($lon, $lat, $distanceMeters);
+
+        // Get candidate keys from spatial index
+        $candidateKeys = [];
+        if ($this->isSharded($dbname)) {
+            $candidateKeys = $this->withinDistanceSharded($dbname, $field, $lon, $lat, $distanceMeters, $searchMBR);
+        } else {
+            if ($this->hasSpatialIndex($dbname, $field, null)) {
+                $candidateKeys = $this->rtreeSearchMBR($dbname, $field, $searchMBR, null);
+            }
+        }
+
+        // Fetch and filter records
+        $results = [];
+
+        if (!empty($candidateKeys)) {
+            // Indexed path: fetch by keys
+            foreach ($candidateKeys as $key) {
+                $record = $this->find($dbname, ['key' => $key]);
+                if (empty($record)) continue;
+                $record = $record[0] ?? $record;
+
+                if (!isset($record[$field])) continue;
+
+                $geometry = $record[$field];
+                $centroid = $this->getGeometryCentroid($geometry);
+                $distance = $this->haversineDistance($lon, $lat, $centroid[0], $centroid[1]);
+
+                if ($distance <= $distanceMeters) {
+                    if ($includeDistance) {
+                        $record['_distance'] = round($distance, 2);
+                    }
+                    $results[] = $record;
+                }
+            }
+        } else {
+            // Fallback: scan all records
+            $allRecords = $this->find($dbname);
+            foreach ($allRecords as $record) {
+                if (!isset($record[$field])) continue;
+
+                $geometry = $record[$field];
+                $validation = $this->validateGeoJSON($geometry);
+                if (!$validation['valid']) continue;
+
+                $centroid = $this->getGeometryCentroid($geometry);
+                $distance = $this->haversineDistance($lon, $lat, $centroid[0], $centroid[1]);
+
+                if ($distance <= $distanceMeters) {
+                    if ($includeDistance) {
+                        $record['_distance'] = round($distance, 2);
+                    }
+                    $results[] = $record;
+                }
+            }
+        }
+
+        // Sort by distance if included
+        if ($includeDistance) {
+            usort($results, fn($a, $b) => $a['_distance'] <=> $b['_distance']);
+        }
+
+        return $results;
+    }
+
+    /**
+     * Sharded withinDistance with shard-skip optimization
+     */
+    private function withinDistanceSharded(string $dbname, string $field, float $lon, float $lat, float $distanceMeters, array $searchMBR): array {
+        $globalIndex = $this->readGlobalSpatialIndex($dbname, $field);
+        $candidateKeys = [];
+
+        if ($globalIndex !== null && isset($globalIndex['shardMBRs'])) {
+            // Shard-skip: only search shards whose MBR overlaps search MBR
+            foreach ($globalIndex['shardMBRs'] as $shardId => $shardMBR) {
+                if ($this->mbrOverlaps($searchMBR, $shardMBR)) {
+                    $keys = $this->rtreeSearchMBR($dbname, $field, $searchMBR, (int)$shardId);
+                    $candidateKeys = array_merge($candidateKeys, $keys);
+                }
+            }
+        } else {
+            // No global index: search all shards
+            $meta = $this->getCachedMeta($dbname);
+            if (isset($meta['shards'])) {
+                foreach ($meta['shards'] as $shard) {
+                    if ($this->hasSpatialIndex($dbname, $field, $shard['id'])) {
+                        $keys = $this->rtreeSearchMBR($dbname, $field, $searchMBR, $shard['id']);
+                        $candidateKeys = array_merge($candidateKeys, $keys);
+                    }
+                }
+            }
+        }
+
+        return $candidateKeys;
+    }
+
+    /**
+     * Find records within a bounding box
+     * @param string $dbname Database name
+     * @param string $field GeoJSON field name
+     * @param float $minLon Minimum longitude
+     * @param float $minLat Minimum latitude
+     * @param float $maxLon Maximum longitude
+     * @param float $maxLat Maximum latitude
+     * @return array Matching records
+     */
+    public function withinBBox(string $dbname, string $field, float $minLon, float $minLat, float $maxLon, float $maxLat): array {
+        $dbname = $this->sanitizeDbName($dbname);
+        $searchMBR = [$minLon, $minLat, $maxLon, $maxLat];
+
+        $candidateKeys = [];
+        if ($this->isSharded($dbname)) {
+            $candidateKeys = $this->withinBBoxSharded($dbname, $field, $searchMBR);
+        } else {
+            if ($this->hasSpatialIndex($dbname, $field, null)) {
+                $candidateKeys = $this->rtreeSearchMBR($dbname, $field, $searchMBR, null);
+            }
+        }
+
+        $results = [];
+
+        if (!empty($candidateKeys)) {
+            foreach ($candidateKeys as $key) {
+                $record = $this->find($dbname, ['key' => $key]);
+                if (empty($record)) continue;
+                $record = $record[0] ?? $record;
+
+                if (!isset($record[$field])) continue;
+
+                // Verify MBR overlap
+                $geometry = $record[$field];
+                $recordMBR = $this->calculateMBR($geometry);
+                if ($this->mbrOverlaps($recordMBR, $searchMBR)) {
+                    $results[] = $record;
+                }
+            }
+        } else {
+            // Fallback: scan all records
+            $allRecords = $this->find($dbname);
+            foreach ($allRecords as $record) {
+                if (!isset($record[$field])) continue;
+
+                $geometry = $record[$field];
+                $validation = $this->validateGeoJSON($geometry);
+                if (!$validation['valid']) continue;
+
+                $recordMBR = $this->calculateMBR($geometry);
+                if ($this->mbrOverlaps($recordMBR, $searchMBR)) {
+                    $results[] = $record;
+                }
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Sharded withinBBox
+     */
+    private function withinBBoxSharded(string $dbname, string $field, array $searchMBR): array {
+        $globalIndex = $this->readGlobalSpatialIndex($dbname, $field);
+        $candidateKeys = [];
+
+        if ($globalIndex !== null && isset($globalIndex['shardMBRs'])) {
+            foreach ($globalIndex['shardMBRs'] as $shardId => $shardMBR) {
+                if ($this->mbrOverlaps($searchMBR, $shardMBR)) {
+                    $keys = $this->rtreeSearchMBR($dbname, $field, $searchMBR, (int)$shardId);
+                    $candidateKeys = array_merge($candidateKeys, $keys);
+                }
+            }
+        } else {
+            $meta = $this->getCachedMeta($dbname);
+            if (isset($meta['shards'])) {
+                foreach ($meta['shards'] as $shard) {
+                    if ($this->hasSpatialIndex($dbname, $field, $shard['id'])) {
+                        $keys = $this->rtreeSearchMBR($dbname, $field, $searchMBR, $shard['id']);
+                        $candidateKeys = array_merge($candidateKeys, $keys);
+                    }
+                }
+            }
+        }
+
+        return $candidateKeys;
+    }
+
+    /**
+     * Find K nearest records to a point
+     * @param string $dbname Database name
+     * @param string $field GeoJSON field name
+     * @param float $lon Center longitude
+     * @param float $lat Center latitude
+     * @param int $k Number of nearest records
+     * @param array $options ['maxDistance' => null (in meters), 'includeDistance' => true]
+     * @return array Nearest records sorted by distance (with _distance in meters)
+     */
+    public function nearest(string $dbname, string $field, float $lon, float $lat, int $k, array $options = []): array {
+        $dbname = $this->sanitizeDbName($dbname);
+        $maxDistance = $options['maxDistance'] ?? null;
+        $includeDistance = $options['includeDistance'] ?? true;
+
+        // Adaptive expanding search with exponential growth
+        // Start small for dense data, expand quickly for sparse data
+        $results = [];
+        $radius = 500; // Start with 500 meters
+        $maxRadius = $maxDistance ?? 10000000; // Max 10000km = 10M meters (global)
+        $attempts = 0;
+        $maxAttempts = 15; // Prevents infinite loop
+
+        while (count($results) < $k && $radius <= $maxRadius && $attempts < $maxAttempts) {
+            $found = $this->withinDistance($dbname, $field, $lon, $lat, $radius, ['includeDistance' => true]);
+
+            if (count($found) >= $k) {
+                $results = $found;
+                break;
+            }
+
+            // Double the radius for next attempt (exponential growth)
+            $radius *= 2;
+            $attempts++;
+        }
+
+        // If we still don't have enough and no max distance, do full scan
+        if (count($results) < $k && $maxDistance === null && $attempts >= $maxAttempts) {
+            $allRecords = $this->find($dbname);
+            $results = [];
+
+            foreach ($allRecords as $record) {
+                if (!isset($record[$field])) continue;
+
+                $geometry = $record[$field];
+                $validation = $this->validateGeoJSON($geometry);
+                if (!$validation['valid']) continue;
+
+                $centroid = $this->getGeometryCentroid($geometry);
+                $distance = $this->haversineDistance($lon, $lat, $centroid[0], $centroid[1]);
+
+                $record['_distance'] = round($distance, 2);
+                $results[] = $record;
+            }
+        }
+
+        // Sort by distance and take k
+        usort($results, fn($a, $b) => $a['_distance'] <=> $b['_distance']);
+        $results = array_slice($results, 0, $k);
+
+        // Remove distance if not requested
+        if (!$includeDistance) {
+            foreach ($results as &$r) {
+                unset($r['_distance']);
+            }
+        }
+
+        // Clear distance cache after query to free memory
+        $this->clearDistanceCache();
+
+        return $results;
+    }
+
+    /**
+     * Find records within a polygon
+     * @param string $dbname Database name
+     * @param string $field GeoJSON field name
+     * @param array $polygon GeoJSON Polygon geometry
+     * @return array Matching records
+     */
+    public function withinPolygon(string $dbname, string $field, array $polygon): array {
+        $dbname = $this->sanitizeDbName($dbname);
+
+        // Validate polygon
+        $validation = $this->validateGeoJSON($polygon);
+        if (!$validation['valid'] || $validation['type'] !== 'Polygon') {
+            return [];
+        }
+
+        $polygonCoords = $polygon['coordinates'];
+        $polygonMBR = $this->calculateMBR($polygon);
+
+        // Get candidates from spatial index
+        $candidateKeys = [];
+        if ($this->isSharded($dbname)) {
+            $candidateKeys = $this->withinPolygonSharded($dbname, $field, $polygonMBR);
+        } else {
+            if ($this->hasSpatialIndex($dbname, $field, null)) {
+                $candidateKeys = $this->rtreeSearchMBR($dbname, $field, $polygonMBR, null);
+            }
+        }
+
+        $results = [];
+
+        if (!empty($candidateKeys)) {
+            foreach ($candidateKeys as $key) {
+                $record = $this->find($dbname, ['key' => $key]);
+                if (empty($record)) continue;
+                $record = $record[0] ?? $record;
+
+                if (!isset($record[$field])) continue;
+
+                $geometry = $record[$field];
+
+                // Check if geometry is within polygon
+                if ($this->geometryWithinPolygon($geometry, $polygonCoords)) {
+                    $results[] = $record;
+                }
+            }
+        } else {
+            // Fallback: scan all records
+            $allRecords = $this->find($dbname);
+            foreach ($allRecords as $record) {
+                if (!isset($record[$field])) continue;
+
+                $geometry = $record[$field];
+                $validation = $this->validateGeoJSON($geometry);
+                if (!$validation['valid']) continue;
+
+                if ($this->geometryWithinPolygon($geometry, $polygonCoords)) {
+                    $results[] = $record;
+                }
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Sharded withinPolygon
+     */
+    private function withinPolygonSharded(string $dbname, string $field, array $polygonMBR): array {
+        $globalIndex = $this->readGlobalSpatialIndex($dbname, $field);
+        $candidateKeys = [];
+
+        if ($globalIndex !== null && isset($globalIndex['shardMBRs'])) {
+            foreach ($globalIndex['shardMBRs'] as $shardId => $shardMBR) {
+                if ($this->mbrOverlaps($polygonMBR, $shardMBR)) {
+                    $keys = $this->rtreeSearchMBR($dbname, $field, $polygonMBR, (int)$shardId);
+                    $candidateKeys = array_merge($candidateKeys, $keys);
+                }
+            }
+        } else {
+            $meta = $this->getCachedMeta($dbname);
+            if (isset($meta['shards'])) {
+                foreach ($meta['shards'] as $shard) {
+                    if ($this->hasSpatialIndex($dbname, $field, $shard['id'])) {
+                        $keys = $this->rtreeSearchMBR($dbname, $field, $polygonMBR, $shard['id']);
+                        $candidateKeys = array_merge($candidateKeys, $keys);
+                    }
+                }
+            }
+        }
+
+        return $candidateKeys;
+    }
+
+    /**
+     * Check if a geometry is within a polygon
+     */
+    private function geometryWithinPolygon(array $geometry, array $polygonCoords): bool {
+        $type = $geometry['type'] ?? '';
+
+        switch ($type) {
+            case 'Point':
+                $coords = $geometry['coordinates'];
+                return $this->pointInPolygon($coords[0], $coords[1], $polygonCoords);
+
+            case 'LineString':
+            case 'MultiPoint':
+                // All points must be within polygon
+                foreach ($geometry['coordinates'] as $point) {
+                    if (!$this->pointInPolygon($point[0], $point[1], $polygonCoords)) {
+                        return false;
+                    }
+                }
+                return true;
+
+            case 'Polygon':
+                // All vertices of outer ring must be within polygon
+                foreach ($geometry['coordinates'][0] as $point) {
+                    if (!$this->pointInPolygon($point[0], $point[1], $polygonCoords)) {
+                        return false;
+                    }
+                }
+                return true;
+
+            default:
+                // For complex types, check centroid
+                $centroid = $this->getGeometryCentroid($geometry);
+                return $this->pointInPolygon($centroid[0], $centroid[1], $polygonCoords);
+        }
+    }
+
+    // ==========================================
+    // SPATIAL INDEX - CRUD INTEGRATION
+    // ==========================================
+
+    /**
+     * Update spatial index when a record is inserted
+     * @param string $dbname Database name
+     * @param array $record The inserted record
+     * @param int $key Record key
+     * @param int|null $shardId Shard ID
+     */
+    private function updateSpatialIndexOnInsert(string $dbname, array $record, int $key, ?int $shardId = null): void {
+        if (!$this->spatialIndexEnabled) return;
+
+        $spatialFields = $this->getSpatialIndexedFields($dbname, $shardId);
+
+        foreach ($spatialFields as $field) {
+            if (!isset($record[$field]) || !is_array($record[$field])) {
+                continue;
+            }
+
+            $geometry = $record[$field];
+            $validation = $this->validateGeoJSON($geometry);
+            if (!$validation['valid']) {
+                continue;
+            }
+
+            // Insert into R-tree
+            $this->rtreeInsert($dbname, $field, $key, $geometry, $shardId);
+
+            // Update global spatial index for sharded databases
+            if ($shardId !== null) {
+                $this->updateGlobalSpatialMBR($dbname, $field, $shardId, $geometry);
+            }
+        }
+    }
+
+    /**
+     * Update spatial index when a record is deleted
+     * @param string $dbname Database name
+     * @param array $record The deleted record
+     * @param int $key Record key
+     * @param int|null $shardId Shard ID
+     */
+    private function updateSpatialIndexOnDelete(string $dbname, array $record, int $key, ?int $shardId = null): void {
+        if (!$this->spatialIndexEnabled) return;
+
+        $spatialFields = $this->getSpatialIndexedFields($dbname, $shardId);
+
+        foreach ($spatialFields as $field) {
+            if (!isset($record[$field])) {
+                continue;
+            }
+
+            // Delete from R-tree
+            $this->rtreeDelete($dbname, $field, $key, $shardId);
+        }
+    }
+
+    /**
+     * Update spatial index when a record is updated
+     * @param string $dbname Database name
+     * @param array $oldRecord The old record
+     * @param array $newRecord The new record
+     * @param int $key Record key
+     * @param int|null $shardId Shard ID
+     */
+    private function updateSpatialIndexOnUpdate(string $dbname, array $oldRecord, array $newRecord, int $key, ?int $shardId = null): void {
+        if (!$this->spatialIndexEnabled) return;
+
+        $spatialFields = $this->getSpatialIndexedFields($dbname, $shardId);
+
+        foreach ($spatialFields as $field) {
+            $oldGeometry = $oldRecord[$field] ?? null;
+            $newGeometry = $newRecord[$field] ?? null;
+
+            // Check if geometry changed
+            if ($oldGeometry === $newGeometry) {
+                continue;
+            }
+
+            // Delete old entry if it existed
+            if ($oldGeometry !== null && is_array($oldGeometry)) {
+                $this->rtreeDelete($dbname, $field, $key, $shardId);
+            }
+
+            // Insert new entry if it exists
+            if ($newGeometry !== null && is_array($newGeometry)) {
+                $validation = $this->validateGeoJSON($newGeometry);
+                if ($validation['valid']) {
+                    $this->rtreeInsert($dbname, $field, $key, $newGeometry, $shardId);
+
+                    // Update global MBR for sharded
+                    if ($shardId !== null) {
+                        $this->updateGlobalSpatialMBR($dbname, $field, $shardId, $newGeometry);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Update global spatial index MBR for a shard
+     */
+    private function updateGlobalSpatialMBR(string $dbname, string $field, int $shardId, array $geometry): void {
+        $globalIndex = $this->readGlobalSpatialIndex($dbname, $field);
+
+        if ($globalIndex === null) {
+            $globalIndex = [
+                'v' => 1,
+                'field' => $field,
+                'shardMBRs' => []
+            ];
+        }
+
+        $geometryMBR = $this->calculateMBR($geometry);
+        $shardIdStr = (string)$shardId;
+
+        if (isset($globalIndex['shardMBRs'][$shardIdStr])) {
+            // Expand existing MBR
+            $globalIndex['shardMBRs'][$shardIdStr] = $this->mbrUnion(
+                $globalIndex['shardMBRs'][$shardIdStr],
+                $geometryMBR
+            );
+        } else {
+            // New shard MBR
+            $globalIndex['shardMBRs'][$shardIdStr] = $geometryMBR;
+        }
+
+        $this->writeGlobalSpatialIndex($dbname, $field, $globalIndex);
+    }
+
+    // ==========================================
     // WRITE BUFFER PUBLIC API
     // ==========================================
 
@@ -5497,6 +7716,10 @@ class noneDBQuery {
     private ?int $limitCount = null;
     private int $offsetCount = 0;
 
+    // Spatial query support (v3.1.0)
+    private array $spatialFilters = [];
+    private ?array $distanceConfig = null;
+
     /**
      * @param noneDB $db
      * @param string $dbname
@@ -5617,6 +7840,123 @@ class noneDBQuery {
                count($this->betweenFilters) > 0 ||
                count($this->notBetweenFilters) > 0 ||
                count($this->searchFilters) > 0;
+    }
+
+    /**
+     * Check if WHERE filters contain any operator-based comparisons
+     * @return bool
+     */
+    private function hasOperatorFilters(): bool {
+        foreach ($this->whereFilters as $value) {
+            if (is_array($value)) {
+                foreach (array_keys($value) as $key) {
+                    if (is_string($key) && strpos($key, '$') === 0) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Check if a record matches WHERE filters with comparison operators
+     * Supports: $gt, $gte, $lt, $lte, $ne, $like, $in, $nin, $exists, $regex
+     * @param array $record
+     * @param array $filters WHERE filters to apply
+     * @return bool
+     */
+    private function matchesWhereFilters(array $record, array $filters): bool {
+        foreach ($filters as $field => $value) {
+            if (!is_array($value)) {
+                // Simple equality: ['field' => 'value']
+                if (!array_key_exists($field, $record) || $record[$field] !== $value) {
+                    return false;
+                }
+            } else {
+                // Operator-based comparison: ['field' => ['$gt' => 10]]
+                foreach ($value as $operator => $operand) {
+                    if (!$this->matchesOperator($record, $field, $operator, $operand)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Apply a single comparison operator
+     * @param array $record
+     * @param string $field
+     * @param string $operator
+     * @param mixed $operand
+     * @return bool
+     */
+    private function matchesOperator(array $record, string $field, string $operator, $operand): bool {
+        $hasField = array_key_exists($field, $record);
+        $fieldValue = $hasField ? $record[$field] : null;
+
+        switch ($operator) {
+            case '$gt':
+                return $hasField && $fieldValue > $operand;
+
+            case '$gte':
+                return $hasField && $fieldValue >= $operand;
+
+            case '$lt':
+                return $hasField && $fieldValue < $operand;
+
+            case '$lte':
+                return $hasField && $fieldValue <= $operand;
+
+            case '$ne':
+                return !$hasField || $fieldValue !== $operand;
+
+            case '$eq':
+                return $hasField && $fieldValue === $operand;
+
+            case '$in':
+                return $hasField && is_array($operand) && in_array($fieldValue, $operand, true);
+
+            case '$nin':
+                return !$hasField || !is_array($operand) || !in_array($fieldValue, $operand, true);
+
+            case '$exists':
+                return $operand ? $hasField : !$hasField;
+
+            case '$like':
+                if (!$hasField || is_array($fieldValue) || is_object($fieldValue)) return false;
+                $pattern = $operand;
+                if (strpos($pattern, '^') === 0 || substr($pattern, -1) === '$') {
+                    $regex = '/' . $pattern . '/i';
+                } else {
+                    $regex = '/' . preg_quote($pattern, '/') . '/i';
+                }
+                return preg_match($regex, (string)$fieldValue) === 1;
+
+            case '$regex':
+                if (!$hasField || is_array($fieldValue) || is_object($fieldValue)) return false;
+                return preg_match('/' . $operand . '/i', (string)$fieldValue) === 1;
+
+            case '$contains':
+                if (!$hasField) return false;
+                if (is_array($fieldValue)) {
+                    return in_array($operand, $fieldValue, true);
+                }
+                if (is_string($fieldValue)) {
+                    return strpos($fieldValue, $operand) !== false;
+                }
+                return false;
+
+            default:
+                // Unknown operator - treat as nested field comparison
+                // e.g., ['address' => ['city' => 'Istanbul']]
+                if ($hasField && is_array($fieldValue) && array_key_exists($operator, $fieldValue)) {
+                    return $fieldValue[$operator] === $operand;
+                }
+                return false;
+        }
     }
 
     // ==========================================
@@ -5848,6 +8188,280 @@ class noneDBQuery {
     }
 
     // ==========================================
+    // SPATIAL QUERY METHODS (v3.1.0)
+    // ==========================================
+
+    /**
+     * Filter records within a distance from a point
+     * @param string $field GeoJSON field name
+     * @param float $lon Center longitude
+     * @param float $lat Center latitude
+     * @param float $distanceMeters Distance in meters
+     * @return self
+     */
+    public function withinDistance(string $field, float $lon, float $lat, float $distanceMeters): self {
+        $this->spatialFilters[] = [
+            'type' => 'withinDistance',
+            'field' => $field,
+            'lon' => $lon,
+            'lat' => $lat,
+            'distance' => $distanceMeters
+        ];
+        return $this;
+    }
+
+    /**
+     * Filter records within a bounding box
+     * @param string $field GeoJSON field name
+     * @param float $minLon Minimum longitude
+     * @param float $minLat Minimum latitude
+     * @param float $maxLon Maximum longitude
+     * @param float $maxLat Maximum latitude
+     * @return self
+     */
+    public function withinBBox(string $field, float $minLon, float $minLat, float $maxLon, float $maxLat): self {
+        $this->spatialFilters[] = [
+            'type' => 'withinBBox',
+            'field' => $field,
+            'minLon' => $minLon,
+            'minLat' => $minLat,
+            'maxLon' => $maxLon,
+            'maxLat' => $maxLat
+        ];
+        return $this;
+    }
+
+    /**
+     * Find K nearest records to a point
+     * Returns records with _distance in meters
+     * @param string $field GeoJSON field name
+     * @param float $lon Center longitude
+     * @param float $lat Center latitude
+     * @param int $k Number of nearest records
+     * @return self
+     */
+    public function nearest(string $field, float $lon, float $lat, int $k): self {
+        $this->spatialFilters[] = [
+            'type' => 'nearest',
+            'field' => $field,
+            'lon' => $lon,
+            'lat' => $lat,
+            'k' => $k
+        ];
+        return $this;
+    }
+
+    /**
+     * Filter records within a polygon
+     * @param string $field GeoJSON field name
+     * @param array $polygon GeoJSON Polygon geometry
+     * @return self
+     */
+    public function withinPolygon(string $field, array $polygon): self {
+        $this->spatialFilters[] = [
+            'type' => 'withinPolygon',
+            'field' => $field,
+            'polygon' => $polygon
+        ];
+        return $this;
+    }
+
+    /**
+     * Include distance in results (adds _distance field)
+     * @param string $field GeoJSON field name
+     * @param float $lon Center longitude
+     * @param float $lat Center latitude
+     * @return self
+     */
+    public function withDistance(string $field, float $lon, float $lat): self {
+        $this->distanceConfig = [
+            'field' => $field,
+            'lon' => $lon,
+            'lat' => $lat
+        ];
+        return $this;
+    }
+
+    /**
+     * Check if query has spatial filters
+     * @return bool
+     */
+    private function hasSpatialFilters(): bool {
+        return !empty($this->spatialFilters);
+    }
+
+    /**
+     * Apply spatial filters to get candidate records
+     * @return array|null Records from spatial filter or null if no spatial filters
+     */
+    private function applySpatialFilters(): ?array {
+        if (empty($this->spatialFilters)) {
+            return null;
+        }
+
+        // Process each spatial filter and intersect results
+        $results = null;
+
+        foreach ($this->spatialFilters as $filter) {
+            $filterResults = [];
+
+            switch ($filter['type']) {
+                case 'withinDistance':
+                    $filterResults = $this->db->withinDistance(
+                        $this->dbname,
+                        $filter['field'],
+                        $filter['lon'],
+                        $filter['lat'],
+                        $filter['distance'],
+                        ['includeDistance' => true]
+                    );
+                    break;
+
+                case 'withinBBox':
+                    $filterResults = $this->db->withinBBox(
+                        $this->dbname,
+                        $filter['field'],
+                        $filter['minLon'],
+                        $filter['minLat'],
+                        $filter['maxLon'],
+                        $filter['maxLat']
+                    );
+                    break;
+
+                case 'nearest':
+                    $filterResults = $this->db->nearest(
+                        $this->dbname,
+                        $filter['field'],
+                        $filter['lon'],
+                        $filter['lat'],
+                        $filter['k'],
+                        ['includeDistance' => true]
+                    );
+                    break;
+
+                case 'withinPolygon':
+                    $filterResults = $this->db->withinPolygon(
+                        $this->dbname,
+                        $filter['field'],
+                        $filter['polygon']
+                    );
+                    break;
+            }
+
+            // Intersect with previous results
+            if ($results === null) {
+                $results = $filterResults;
+            } else {
+                // Intersect by key
+                $resultKeys = array_column($results, 'key');
+                $results = array_filter($filterResults, fn($r) => in_array($r['key'], $resultKeys));
+                $results = array_values($results);
+            }
+        }
+
+        return $results ?? [];
+    }
+
+    /**
+     * Add distance to records if distanceConfig is set
+     * @param array $records
+     * @return array
+     */
+    private function applyDistanceCalculation(array $records): array {
+        if ($this->distanceConfig === null) {
+            return $records;
+        }
+
+        $field = $this->distanceConfig['field'];
+        $lon = $this->distanceConfig['lon'];
+        $lat = $this->distanceConfig['lat'];
+
+        foreach ($records as &$record) {
+            if (!isset($record[$field]) || isset($record['_distance'])) {
+                continue;
+            }
+
+            $geometry = $record[$field];
+            $validation = $this->db->validateGeoJSON($geometry);
+            if (!$validation['valid']) {
+                continue;
+            }
+
+            // Calculate distance to centroid
+            $centroid = $this->getRecordCentroid($geometry);
+            $record['_distance'] = round(
+                $this->db->haversineDistance($lon, $lat, $centroid[0], $centroid[1]),
+                4
+            );
+        }
+
+        return $records;
+    }
+
+    /**
+     * Get centroid of a geometry (helper for query builder)
+     */
+    private function getRecordCentroid(array $geometry): array {
+        $type = $geometry['type'] ?? '';
+        $coords = $geometry['coordinates'] ?? [];
+
+        switch ($type) {
+            case 'Point':
+                return [$coords[0], $coords[1]];
+            case 'Polygon':
+                $ring = $coords[0];
+                $sumLon = $sumLat = 0;
+                $n = count($ring) - 1;
+                for ($i = 0; $i < $n; $i++) {
+                    $sumLon += $ring[$i][0];
+                    $sumLat += $ring[$i][1];
+                }
+                return [$sumLon / $n, $sumLat / $n];
+            default:
+                // Use MBR center
+                $mbr = $this->calculateSimpleMBR($geometry);
+                return [($mbr[0] + $mbr[2]) / 2, ($mbr[1] + $mbr[3]) / 2];
+        }
+    }
+
+    /**
+     * Simple MBR calculation for query builder
+     */
+    private function calculateSimpleMBR(array $geometry): array {
+        $type = $geometry['type'] ?? '';
+        $coords = $geometry['coordinates'] ?? [];
+
+        switch ($type) {
+            case 'Point':
+                return [$coords[0], $coords[1], $coords[0], $coords[1]];
+            case 'LineString':
+            case 'MultiPoint':
+                $minLon = $maxLon = $coords[0][0];
+                $minLat = $maxLat = $coords[0][1];
+                foreach ($coords as $p) {
+                    $minLon = min($minLon, $p[0]);
+                    $maxLon = max($maxLon, $p[0]);
+                    $minLat = min($minLat, $p[1]);
+                    $maxLat = max($maxLat, $p[1]);
+                }
+                return [$minLon, $minLat, $maxLon, $maxLat];
+            case 'Polygon':
+                $ring = $coords[0];
+                $minLon = $maxLon = $ring[0][0];
+                $minLat = $maxLat = $ring[0][1];
+                foreach ($ring as $p) {
+                    $minLon = min($minLon, $p[0]);
+                    $maxLon = max($maxLon, $p[0]);
+                    $minLat = min($minLat, $p[1]);
+                    $maxLat = max($maxLat, $p[1]);
+                }
+                return [$minLon, $minLat, $maxLon, $maxLat];
+            default:
+                return [0, 0, 0, 0];
+        }
+    }
+
+    // ==========================================
     // TERMINAL METHODS (execute and return result)
     // ==========================================
 
@@ -5856,36 +8470,60 @@ class noneDBQuery {
      * @return array
      */
     public function get(): array {
-        // 1. Base query - get all records first if we have OR conditions
-        if (count($this->orWhereFilters) > 0) {
-            // With OR conditions, we need all records first
+        // 0. Apply spatial filters first if present (v3.1.0)
+        if ($this->hasSpatialFilters()) {
+            $results = $this->applySpatialFilters();
+            if ($results === null) {
+                $results = [];
+            }
+
+            // Apply WHERE filters to spatial results (with operator support)
+            if (count($this->whereFilters) > 0) {
+                $results = array_filter($results, function($record) {
+                    return $this->matchesWhereFilters($record, $this->whereFilters);
+                });
+                $results = array_values($results);
+            }
+
+            // Apply OR WHERE filters (with operator support)
+            if (count($this->orWhereFilters) > 0) {
+                $results = array_filter($results, function($record) {
+                    foreach ($this->orWhereFilters as $orFilter) {
+                        if ($this->matchesWhereFilters($record, $orFilter)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+                $results = array_values($results);
+            }
+
+            // Continue with advanced filters, joins, etc.
+            goto applyAdvancedFilters;
+        }
+
+        // 1. Base query - get all records first if we have OR conditions or operator filters
+        $hasOperatorFilters = $this->hasOperatorFilters();
+
+        if (count($this->orWhereFilters) > 0 || $hasOperatorFilters) {
+            // With OR conditions or operators, we need all records first
             $results = $this->db->find($this->dbname, 0);
             if ($results === false) return [];
 
-            // Apply WHERE + OR WHERE logic
+            // Apply WHERE + OR WHERE logic (with operator support)
             $results = array_filter($results, function($record) {
                 // Check main WHERE filters (AND logic)
-                $matchesWhere = true;
-                if (count($this->whereFilters) > 0) {
-                    foreach ($this->whereFilters as $field => $value) {
-                        if (!array_key_exists($field, $record) || $record[$field] !== $value) {
-                            $matchesWhere = false;
-                            break;
-                        }
-                    }
+                $matchesWhere = $this->matchesWhereFilters($record, $this->whereFilters);
+
+                // If no OR filters, just return WHERE result
+                if (count($this->orWhereFilters) === 0) {
+                    return $matchesWhere;
                 }
 
                 // Check OR WHERE filters
                 $matchesOrWhere = false;
                 foreach ($this->orWhereFilters as $orFilter) {
-                    $orMatch = true;
-                    foreach ($orFilter as $field => $value) {
-                        if (!array_key_exists($field, $record) || $record[$field] !== $value) {
-                            $orMatch = false;
-                            break;
-                        }
-                    }
-                    if ($orMatch) {
+                    if ($this->matchesWhereFilters($record, $orFilter)) {
                         $matchesOrWhere = true;
                         break;
                     }
@@ -5896,12 +8534,13 @@ class noneDBQuery {
             });
             $results = array_values($results);
         } else {
-            // No OR conditions, use standard WHERE
+            // No OR conditions and no operators, use standard WHERE (direct pass to find)
             $filters = count($this->whereFilters) > 0 ? $this->whereFilters : 0;
             $results = $this->db->find($this->dbname, $filters);
             if ($results === false) return [];
         }
 
+        applyAdvancedFilters:
         // 2-9. Apply all advanced filters in single pass (v3.0.0 optimization)
         // Replaces multiple array_filter calls with one pass for better performance
         if ($this->hasAdvancedFilters()) {
@@ -6060,6 +8699,11 @@ class noneDBQuery {
                     return $record;
                 }
             }, $results);
+        }
+
+        // Apply distance calculation if withDistance() was called (v3.1.0)
+        if ($this->distanceConfig !== null) {
+            $results = $this->applyDistanceCalculation($results);
         }
 
         return $results;
