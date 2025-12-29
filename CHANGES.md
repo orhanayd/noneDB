@@ -52,9 +52,11 @@ $db->rebuildSpatialIndex("restaurants", "location");
 
 #### Spatial Query Methods
 
+All distance parameters and results are in **meters**.
+
 ```php
-// Find within radius (km)
-$nearby = $db->withinDistance("restaurants", "location", 28.97, 41.00, 5);
+// Find within radius (meters)
+$nearby = $db->withinDistance("restaurants", "location", 28.97, 41.00, 5000);  // 5km
 
 // Find in bounding box
 $inArea = $db->withinBBox("restaurants", "location", 28.97, 41.00, 29.00, 41.03);
@@ -70,9 +72,9 @@ $inPolygon = $db->withinPolygon("restaurants", "location", $polygon);
 
 ```php
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.97, 41.00, 5)
+    ->withinDistance('location', 28.97, 41.00, 5000)  // 5000 meters
     ->where(['open_now' => true])
-    ->withDistance('location', 28.97, 41.00)
+    ->withDistance('location', 28.97, 41.00)  // _distance field in meters
     ->sort('_distance', 'asc')
     ->limit(10)
     ->get();
@@ -128,7 +130,7 @@ $results = $db->query("users")
 
 // Combined with spatial queries
 $results = $db->query("restaurants")
-    ->withinDistance('location', 28.97, 41.00, 5)
+    ->withinDistance('location', 28.97, 41.00, 5000)  // 5km
     ->where([
         'rating' => ['$gte' => 4.0],
         'cuisine' => ['$in' => ['turkish', 'italian']]
@@ -178,18 +180,18 @@ $results = $db->query("restaurants")
 - `getSpatialIndexes($dbname)` - List all spatial indexes
 - `dropSpatialIndex($dbname, $field)` - Remove index
 - `rebuildSpatialIndex($dbname, $field)` - Rebuild index
-- `withinDistance($dbname, $field, $lon, $lat, $km)` - Find within radius
+- `withinDistance($dbname, $field, $lon, $lat, $meters)` - Find within radius (meters)
 - `withinBBox($dbname, $field, $minLon, $minLat, $maxLon, $maxLat)` - Find in bbox
 - `nearest($dbname, $field, $lon, $lat, $k)` - Find K nearest
 - `withinPolygon($dbname, $field, $polygon)` - Find in polygon
 - `validateGeoJSON($geometry)` - Validate GeoJSON
 
 #### Query Builder Methods (noneDBQuery)
-- `withinDistance($field, $lon, $lat, $km)` - Spatial: within radius
+- `withinDistance($field, $lon, $lat, $meters)` - Spatial: within radius (meters)
 - `withinBBox($field, $minLon, $minLat, $maxLon, $maxLat)` - Spatial: within bbox
 - `nearest($field, $lon, $lat, $k)` - Spatial: K nearest
 - `withinPolygon($field, $polygon)` - Spatial: within polygon
-- `withDistance($field, $lon, $lat)` - Add `_distance` field to results
+- `withDistance($field, $lon, $lat)` - Add `_distance` field to results (meters)
 
 #### Comparison Operators in where()
 - `$gt`, `$gte`, `$lt`, `$lte` - Numeric comparisons
@@ -221,7 +223,12 @@ New documentation files in `docs/`:
 
 ### Breaking Changes
 
-None. All v3.0.x APIs remain backward compatible.
+None. Spatial indexing is a new feature in v3.1.0.
+
+**Note:** All spatial distance parameters and results use **meters** as the unit:
+- `withinDistance()` - distance parameter in meters
+- `_distance` field in results is in meters
+- `nearest()` `maxDistance` option is in meters
 
 ---
 

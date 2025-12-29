@@ -376,8 +376,8 @@ $result = $db->rebuildSpatialIndex("locations", "coords");
 ### withinDistance()
 
 ```php
-$nearby = $db->withinDistance("locations", "coords", 28.97, 41.00, 5);
-// Records within 5km
+$nearby = $db->withinDistance("locations", "coords", 28.97, 41.00, 5000);
+// Records within 5000 meters (5km)
 ```
 
 ### withinBBox()

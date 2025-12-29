@@ -151,7 +151,7 @@ foreach ($recordCounts as $count) {
 
     // withinDistance only
     $start = microtime(true);
-    $results = $db->withinDistance('benchmark', 'location', 28.9, 41.0, 10);
+    $results = $db->withinDistance('benchmark', 'location', 28.9, 41.0, 10000);
     $withinDistTime = (microtime(true) - $start) * 1000;
     echo "withinDistance (10km): " . round($withinDistTime, 2) . " ms (" . count($results) . " results)\n";
 
@@ -172,7 +172,7 @@ foreach ($recordCounts as $count) {
     // Spatial + simple where
     $start = microtime(true);
     $results = $db->query('benchmark')
-        ->withinDistance('location', 28.9, 41.0, 10)
+        ->withinDistance('location', 28.9, 41.0, 10000)
         ->where(['status' => 'active'])
         ->get();
     $spatialSimpleTime = (microtime(true) - $start) * 1000;
@@ -181,7 +181,7 @@ foreach ($recordCounts as $count) {
     // Spatial + $gte
     $start = microtime(true);
     $results = $db->query('benchmark')
-        ->withinDistance('location', 28.9, 41.0, 10)
+        ->withinDistance('location', 28.9, 41.0, 10000)
         ->where(['salary' => ['$gte' => 70000]])
         ->get();
     $spatialGteTime = (microtime(true) - $start) * 1000;
@@ -190,7 +190,7 @@ foreach ($recordCounts as $count) {
     // Spatial + $in
     $start = microtime(true);
     $results = $db->query('benchmark')
-        ->withinDistance('location', 28.9, 41.0, 10)
+        ->withinDistance('location', 28.9, 41.0, 10000)
         ->where(['department' => ['$in' => ['Engineering', 'Design']]])
         ->get();
     $spatialInTime = (microtime(true) - $start) * 1000;
@@ -199,7 +199,7 @@ foreach ($recordCounts as $count) {
     // Spatial + range
     $start = microtime(true);
     $results = $db->query('benchmark')
-        ->withinDistance('location', 28.9, 41.0, 10)
+        ->withinDistance('location', 28.9, 41.0, 10000)
         ->where(['age' => ['$gte' => 25, '$lte' => 40]])
         ->get();
     $spatialRangeTime = (microtime(true) - $start) * 1000;
@@ -208,7 +208,7 @@ foreach ($recordCounts as $count) {
     // Spatial + complex operators
     $start = microtime(true);
     $results = $db->query('benchmark')
-        ->withinDistance('location', 28.9, 41.0, 10)
+        ->withinDistance('location', 28.9, 41.0, 10000)
         ->where([
             'status' => 'active',
             'salary' => ['$gte' => 50000, '$lte' => 120000],
@@ -222,7 +222,7 @@ foreach ($recordCounts as $count) {
     // Spatial + operators + sort
     $start = microtime(true);
     $results = $db->query('benchmark')
-        ->withinDistance('location', 28.9, 41.0, 10)
+        ->withinDistance('location', 28.9, 41.0, 10000)
         ->where(['salary' => ['$gte' => 50000]])
         ->withDistance('location', 28.9, 41.0)
         ->sort('_distance', 'asc')

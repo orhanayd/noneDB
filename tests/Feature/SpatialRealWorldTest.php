@@ -40,8 +40,8 @@ class SpatialRealWorldTest extends noneDBTestCase
         $result = $this->noneDB->insert($this->testDbName, $data);
         $this->assertEquals(100, $result['n']);
 
-        // Verify spatial queries work
-        $nearby = $this->noneDB->withinDistance($this->testDbName, 'location', 29.0, 41.0, 50);
+        // Verify spatial queries work (50km = 50000m)
+        $nearby = $this->noneDB->withinDistance($this->testDbName, 'location', 29.0, 41.0, 50000);
         $this->assertGreaterThan(0, count($nearby));
     }
 
@@ -70,8 +70,8 @@ class SpatialRealWorldTest extends noneDBTestCase
         $deleteResult = $this->noneDB->delete($this->testDbName, ['active' => false]);
         $this->assertEquals(25, $deleteResult['n']);
 
-        // Verify spatial index is updated - deleted records should not appear
-        $all = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 100);
+        // Verify spatial index is updated - deleted records should not appear (100km = 100000m)
+        $all = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 100000);
         $this->assertCount(25, $all);
 
         // All remaining should be active
@@ -111,9 +111,9 @@ class SpatialRealWorldTest extends noneDBTestCase
         ]);
         $this->assertEquals(1, $updateResult['n']);
 
-        // Verify spatial index updated
-        $inIstanbul = $this->noneDB->withinDistance($this->testDbName, 'location', 29.0, 41.0, 50);
-        $inAnkara = $this->noneDB->withinDistance($this->testDbName, 'location', 32.8, 39.9, 50);
+        // Verify spatial index updated (50km = 50000m)
+        $inIstanbul = $this->noneDB->withinDistance($this->testDbName, 'location', 29.0, 41.0, 50000);
+        $inAnkara = $this->noneDB->withinDistance($this->testDbName, 'location', 32.8, 39.9, 50000);
 
         $this->assertEquals(19, count($inIstanbul)); // 19 left in Istanbul
         $this->assertEquals(1, count($inAnkara));     // 1 moved to Ankara
@@ -133,13 +133,13 @@ class SpatialRealWorldTest extends noneDBTestCase
             ['name' => 'Place 1', 'location' => ['type' => 'Point', 'coordinates' => [28.9, 41.0]]]
         ]);
 
-        // Query in completely different location (London)
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', -0.1, 51.5, 10);
+        // Query in completely different location (London) - 10km = 10000m
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', -0.1, 51.5, 10000);
         $this->assertCount(0, $results);
 
         // Nearest with no results in range
         $nearest = $this->noneDB->nearest($this->testDbName, 'location', -0.1, 51.5, 5, [
-            'maxDistance' => 100 // 100km max
+            'maxDistance' => 100000 // 100km = 100000m max
         ]);
         $this->assertCount(0, $nearest);
     }
@@ -151,7 +151,7 @@ class SpatialRealWorldTest extends noneDBTestCase
     {
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 10);
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 10000);
         $this->assertCount(0, $results);
 
         $bbox = $this->noneDB->withinBBox($this->testDbName, 'location', 28, 40, 30, 42);
@@ -175,12 +175,12 @@ class SpatialRealWorldTest extends noneDBTestCase
         ]);
 
         // 50m radius - should find only Point A
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9800, 41.0000, 0.05);
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9800, 41.0000, 50);
         $this->assertCount(1, $results);
         $this->assertEquals('Point A', $results[0]['name']);
 
         // 150m radius - should find both
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9800, 41.0000, 0.15);
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9800, 41.0000, 150);
         $this->assertCount(2, $results);
     }
 
@@ -198,12 +198,12 @@ class SpatialRealWorldTest extends noneDBTestCase
             ['name' => 'Tokyo', 'location' => ['type' => 'Point', 'coordinates' => [139.7, 35.7]]]
         ]);
 
-        // 10000km should find Istanbul and NY from Istanbul
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 10000);
+        // 10000km should find Istanbul and NY from Istanbul (10000000m)
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 10000000);
         $this->assertGreaterThanOrEqual(2, count($results));
 
-        // 20000km should find all
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 20000);
+        // 20000km should find all (20000000m)
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 20000000);
         $this->assertCount(3, $results);
     }
 
@@ -226,8 +226,8 @@ class SpatialRealWorldTest extends noneDBTestCase
         $results = $this->noneDB->withinBBox($this->testDbName, 'location', 174, -22, 180, -17);
         $this->assertEquals(2, count($results));
 
-        // Distance query works across date line
-        $nearby = $this->noneDB->withinDistance($this->testDbName, 'location', 179.0, -18.0, 1000);
+        // Distance query works across date line (1000km = 1000000m)
+        $nearby = $this->noneDB->withinDistance($this->testDbName, 'location', 179.0, -18.0, 1000000);
         $this->assertGreaterThanOrEqual(1, count($nearby));
     }
 
@@ -243,8 +243,8 @@ class SpatialRealWorldTest extends noneDBTestCase
             ['name' => 'Arctic Station', 'location' => ['type' => 'Point', 'coordinates' => [0, 89.0]]]
         ]);
 
-        // Query near pole
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 0, 89.5, 100);
+        // Query near pole (100km = 100000m)
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 0, 89.5, 100000);
         $this->assertCount(1, $results);
     }
 
@@ -271,18 +271,18 @@ class SpatialRealWorldTest extends noneDBTestCase
              'location' => ['type' => 'Point', 'coordinates' => [28.979, 41.006]]]
         ]);
 
-        // Find nearby restaurants with high rating (5km radius to include all)
+        // Find nearby restaurants with high rating (5km = 5000m radius to include all)
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.980, 41.008, 5)
+            ->withinDistance('location', 28.980, 41.008, 5000)
             ->where(['type' => 'restaurant', 'rating' => ['$gte' => 4]])
             ->get();
 
         $this->assertCount(1, $results);
         $this->assertEquals('Fancy Restaurant', $results[0]['name']);
 
-        // Find nearby budget places
+        // Find nearby budget places (5km = 5000m)
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.980, 41.008, 5)
+            ->withinDistance('location', 28.980, 41.008, 5000)
             ->where(['price' => 'low'])
             ->get();
 
@@ -403,8 +403,8 @@ class SpatialRealWorldTest extends noneDBTestCase
             ['name' => 'A', 'location' => ['type' => 'Point', 'coordinates' => [28.9, 41.0]]]
         ]);
 
-        // Verify works
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 1);
+        // Verify works (1km = 1000m)
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 1000);
         $this->assertCount(1, $results);
 
         // Drop
@@ -414,7 +414,7 @@ class SpatialRealWorldTest extends noneDBTestCase
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
         // Should still work (rebuild from data)
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 1);
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9, 41.0, 1000);
         $this->assertCount(1, $results);
     }
 
@@ -427,15 +427,15 @@ class SpatialRealWorldTest extends noneDBTestCase
     {
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
-        // Restaurants with delivery radius
+        // Restaurants with delivery radius in meters
         $this->noneDB->insert($this->testDbName, [
-            ['name' => 'Pizza Place', 'cuisine' => 'italian', 'delivery_radius_km' => 5,
+            ['name' => 'Pizza Place', 'cuisine' => 'italian', 'delivery_radius_m' => 5000,
              'min_order' => 50, 'rating' => 4.5, 'open' => true,
              'location' => ['type' => 'Point', 'coordinates' => [28.980, 41.008]]],
-            ['name' => 'Burger Joint', 'cuisine' => 'american', 'delivery_radius_km' => 3,
+            ['name' => 'Burger Joint', 'cuisine' => 'american', 'delivery_radius_m' => 3000,
              'min_order' => 30, 'rating' => 4.2, 'open' => true,
              'location' => ['type' => 'Point', 'coordinates' => [28.985, 41.010]]],
-            ['name' => 'Sushi Bar', 'cuisine' => 'japanese', 'delivery_radius_km' => 7,
+            ['name' => 'Sushi Bar', 'cuisine' => 'japanese', 'delivery_radius_m' => 7000,
              'min_order' => 100, 'rating' => 4.8, 'open' => false,
              'location' => ['type' => 'Point', 'coordinates' => [28.990, 41.005]]]
         ]);
@@ -444,23 +444,23 @@ class SpatialRealWorldTest extends noneDBTestCase
         $customerLon = 28.982;
         $customerLat = 41.009;
 
-        // Find open restaurants that can deliver to customer, sorted by rating
+        // Find open restaurants that can deliver to customer, sorted by rating (10km = 10000m)
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', $customerLon, $customerLat, 10)
+            ->withinDistance('location', $customerLon, $customerLat, 10000)
             ->where(['open' => true])
             ->withDistance('location', $customerLon, $customerLat)
             ->sort('rating', 'desc')
             ->get();
 
-        // Filter by delivery radius (customer must be within restaurant's delivery range)
+        // Filter by delivery radius (customer must be within restaurant's delivery range, both in meters)
         $canDeliver = array_filter($results, function($r) {
-            return $r['_distance'] <= $r['delivery_radius_km'];
+            return $r['_distance'] <= $r['delivery_radius_m'];
         });
 
         $this->assertGreaterThan(0, count($canDeliver));
         foreach ($canDeliver as $restaurant) {
             $this->assertTrue($restaurant['open']);
-            $this->assertLessThanOrEqual($restaurant['delivery_radius_km'], $restaurant['_distance']);
+            $this->assertLessThanOrEqual($restaurant['delivery_radius_m'], $restaurant['_distance']);
         }
     }
 

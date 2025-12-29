@@ -165,7 +165,7 @@ $db->insert("restaurants", [
 
 // Find within radius
 $nearby = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 5)  // 5km
+    ->withinDistance('location', 28.9784, 41.0082, 5000)  // 5000 meters (5km)
     ->where(['open_now' => true])
     ->get();
 

@@ -98,8 +98,8 @@ class SpatialIndexTest extends noneDBTestCase
     {
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
-        // Query within 1km of Hagia Sophia
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 1);
+        // Query within 1000m (1km) of Hagia Sophia
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 1000);
 
         $this->assertIsArray($results);
         $this->assertGreaterThan(0, count($results));
@@ -117,7 +117,7 @@ class SpatialIndexTest extends noneDBTestCase
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
         // Query in completely different location (London)
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', -0.1276, 51.5074, 1);
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', -0.1276, 51.5074, 1000);
 
         $this->assertIsArray($results);
         $this->assertCount(0, $results);
@@ -235,8 +235,8 @@ class SpatialIndexTest extends noneDBTestCase
             'location' => ['type' => 'Point', 'coordinates' => [29.0041, 41.0211]]
         ]);
 
-        // Should find the new location
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 29.0041, 41.0211, 0.1);
+        // Should find the new location (100m radius)
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 29.0041, 41.0211, 100);
 
         $names = array_column($results, 'name');
         $this->assertContains('Maiden Tower', $names);
@@ -249,8 +249,8 @@ class SpatialIndexTest extends noneDBTestCase
     {
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
-        // Find Hagia Sophia first
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 0.01);
+        // Find Hagia Sophia first (10m radius)
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 10);
         $this->assertGreaterThan(0, count($results));
         $hagiaSophiaKey = null;
         foreach ($results as $r) {
@@ -265,7 +265,7 @@ class SpatialIndexTest extends noneDBTestCase
         $this->noneDB->delete($this->testDbName, ['key' => $hagiaSophiaKey]);
 
         // Should no longer find it
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 0.01);
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 10);
         $names = array_column($results, 'name');
         $this->assertNotContains('Hagia Sophia', $names);
     }
@@ -277,8 +277,8 @@ class SpatialIndexTest extends noneDBTestCase
     {
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
-        // Find Hagia Sophia
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 0.01);
+        // Find Hagia Sophia (10m radius)
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 10);
         $hagiaSophiaKey = null;
         foreach ($results as $r) {
             if ($r['name'] === 'Hagia Sophia') {
@@ -294,13 +294,13 @@ class SpatialIndexTest extends noneDBTestCase
             ['set' => ['location' => $newLocation]]
         ]);
 
-        // Should find it at new location
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 32.8597, 39.9334, 1);
+        // Should find it at new location (1000m radius)
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 32.8597, 39.9334, 1000);
         $names = array_column($results, 'name');
         $this->assertContains('Hagia Sophia', $names);
 
         // Should NOT find it at old location
-        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 0.01);
+        $results = $this->noneDB->withinDistance($this->testDbName, 'location', 28.9803, 41.0086, 10);
         $names = array_column($results, 'name');
         $this->assertNotContains('Hagia Sophia', $names);
     }
@@ -315,7 +315,7 @@ class SpatialIndexTest extends noneDBTestCase
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.9803, 41.0086, 1)
+            ->withinDistance('location', 28.9803, 41.0086, 1000)
             ->get();
 
         $this->assertIsArray($results);
@@ -398,7 +398,7 @@ class SpatialIndexTest extends noneDBTestCase
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.9780, 41.0070, 1)
+            ->withinDistance('location', 28.9780, 41.0070, 1000)
             ->where(['category' => 'restaurant'])
             ->get();
 
@@ -418,7 +418,7 @@ class SpatialIndexTest extends noneDBTestCase
         $this->noneDB->createSpatialIndex($this->testDbName, 'location');
 
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.9803, 41.0086, 2)
+            ->withinDistance('location', 28.9803, 41.0086, 2000)
             ->withDistance('location', 28.9803, 41.0086)
             ->sort('_distance', 'asc')
             ->get();

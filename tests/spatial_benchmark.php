@@ -66,7 +66,7 @@ foreach ($recordCounts as $count) {
 
     // 3. withinDistance query
     $start = microtime(true);
-    $results = $db->withinDistance('benchmark_locations', 'location', 28.9, 41.0, 5);
+    $results = $db->withinDistance('benchmark_locations', 'location', 28.9, 41.0, 5000);
     $queryTime = (microtime(true) - $start) * 1000;
     echo "withinDistance (5km): " . round($queryTime, 2) . " ms (" . count($results) . " results)\n";
 
@@ -85,7 +85,7 @@ foreach ($recordCounts as $count) {
     // 6. Query Builder with spatial + where filter
     $start = microtime(true);
     $results = $db->query('benchmark_locations')
-        ->withinDistance('location', 28.9, 41.0, 10)
+        ->withinDistance('location', 28.9, 41.0, 10000)
         ->where(['name' => ['$like' => 'Location 1%']])
         ->get();
     $combinedTime = (microtime(true) - $start) * 1000;

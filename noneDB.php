@@ -5489,13 +5489,13 @@ class noneDB {
     }
 
     /**
-     * Calculate Haversine distance between two points (in kilometers)
+     * Calculate Haversine distance between two points (in meters)
      * Uses memoization cache for repeated calculations
      * @param float $lon1 Longitude of point 1
      * @param float $lat1 Latitude of point 1
      * @param float $lon2 Longitude of point 2
      * @param float $lat2 Latitude of point 2
-     * @return float Distance in kilometers
+     * @return float Distance in meters
      */
     public function haversineDistance(float $lon1, float $lat1, float $lon2, float $lat2): float {
         // Check cache first (memoization)
@@ -5504,7 +5504,7 @@ class noneDB {
             return $this->distanceCache[$key];
         }
 
-        $earthRadius = 6371.0; // km
+        $earthRadius = 6371000.0; // meters
 
         $latDelta = deg2rad($lat2 - $lat1);
         $lonDelta = deg2rad($lon2 - $lon1);
@@ -5536,13 +5536,13 @@ class noneDB {
      * Convert a circle (center + radius) to a bounding box
      * @param float $lon Center longitude
      * @param float $lat Center latitude
-     * @param float $radiusKm Radius in kilometers
+     * @param float $radiusMeters Radius in meters
      * @return array [minLon, minLat, maxLon, maxLat]
      */
-    private function circleToBBox(float $lon, float $lat, float $radiusKm): array {
-        // Approximate degrees per km at this latitude
-        $latDeg = $radiusKm / 111.0; // 1 degree lat ~ 111 km
-        $lonDeg = $radiusKm / (111.0 * cos(deg2rad($lat)));
+    private function circleToBBox(float $lon, float $lat, float $radiusMeters): array {
+        // Approximate degrees per meter at this latitude
+        $latDeg = $radiusMeters / 111000.0; // 1 degree lat ~ 111 km = 111000 m
+        $lonDeg = $radiusMeters / (111000.0 * cos(deg2rad($lat)));
 
         // Handle edge case near poles
         if (abs($lat) > 89) {
@@ -6787,21 +6787,21 @@ class noneDB {
      * @param string $field GeoJSON field name
      * @param float $lon Center longitude
      * @param float $lat Center latitude
-     * @param float $distanceKm Distance in kilometers
+     * @param float $distanceMeters Distance in meters
      * @param array $options ['includeDistance' => false]
-     * @return array Matching records
+     * @return array Matching records (with _distance in meters if includeDistance=true)
      */
-    public function withinDistance(string $dbname, string $field, float $lon, float $lat, float $distanceKm, array $options = []): array {
+    public function withinDistance(string $dbname, string $field, float $lon, float $lat, float $distanceMeters, array $options = []): array {
         $dbname = $this->sanitizeDbName($dbname);
         $includeDistance = $options['includeDistance'] ?? false;
 
         // Convert circle to bounding box for R-tree search
-        $searchMBR = $this->circleToBBox($lon, $lat, $distanceKm);
+        $searchMBR = $this->circleToBBox($lon, $lat, $distanceMeters);
 
         // Get candidate keys from spatial index
         $candidateKeys = [];
         if ($this->isSharded($dbname)) {
-            $candidateKeys = $this->withinDistanceSharded($dbname, $field, $lon, $lat, $distanceKm, $searchMBR);
+            $candidateKeys = $this->withinDistanceSharded($dbname, $field, $lon, $lat, $distanceMeters, $searchMBR);
         } else {
             if ($this->hasSpatialIndex($dbname, $field, null)) {
                 $candidateKeys = $this->rtreeSearchMBR($dbname, $field, $searchMBR, null);
@@ -6824,9 +6824,9 @@ class noneDB {
                 $centroid = $this->getGeometryCentroid($geometry);
                 $distance = $this->haversineDistance($lon, $lat, $centroid[0], $centroid[1]);
 
-                if ($distance <= $distanceKm) {
+                if ($distance <= $distanceMeters) {
                     if ($includeDistance) {
-                        $record['_distance'] = round($distance, 4);
+                        $record['_distance'] = round($distance, 2);
                     }
                     $results[] = $record;
                 }
@@ -6844,9 +6844,9 @@ class noneDB {
                 $centroid = $this->getGeometryCentroid($geometry);
                 $distance = $this->haversineDistance($lon, $lat, $centroid[0], $centroid[1]);
 
-                if ($distance <= $distanceKm) {
+                if ($distance <= $distanceMeters) {
                     if ($includeDistance) {
-                        $record['_distance'] = round($distance, 4);
+                        $record['_distance'] = round($distance, 2);
                     }
                     $results[] = $record;
                 }
@@ -6864,7 +6864,7 @@ class noneDB {
     /**
      * Sharded withinDistance with shard-skip optimization
      */
-    private function withinDistanceSharded(string $dbname, string $field, float $lon, float $lat, float $distanceKm, array $searchMBR): array {
+    private function withinDistanceSharded(string $dbname, string $field, float $lon, float $lat, float $distanceMeters, array $searchMBR): array {
         $globalIndex = $this->readGlobalSpatialIndex($dbname, $field);
         $candidateKeys = [];
 
@@ -6988,8 +6988,8 @@ class noneDB {
      * @param float $lon Center longitude
      * @param float $lat Center latitude
      * @param int $k Number of nearest records
-     * @param array $options ['maxDistance' => null, 'includeDistance' => true]
-     * @return array Nearest records sorted by distance
+     * @param array $options ['maxDistance' => null (in meters), 'includeDistance' => true]
+     * @return array Nearest records sorted by distance (with _distance in meters)
      */
     public function nearest(string $dbname, string $field, float $lon, float $lat, int $k, array $options = []): array {
         $dbname = $this->sanitizeDbName($dbname);
@@ -6999,8 +6999,8 @@ class noneDB {
         // Adaptive expanding search with exponential growth
         // Start small for dense data, expand quickly for sparse data
         $results = [];
-        $radius = 0.5; // Start with 500m
-        $maxRadius = $maxDistance ?? 10000; // Max 10000km (global)
+        $radius = 500; // Start with 500 meters
+        $maxRadius = $maxDistance ?? 10000000; // Max 10000km = 10M meters (global)
         $attempts = 0;
         $maxAttempts = 15; // Prevents infinite loop
 
@@ -7032,7 +7032,7 @@ class noneDB {
                 $centroid = $this->getGeometryCentroid($geometry);
                 $distance = $this->haversineDistance($lon, $lat, $centroid[0], $centroid[1]);
 
-                $record['_distance'] = round($distance, 4);
+                $record['_distance'] = round($distance, 2);
                 $results[] = $record;
             }
         }
@@ -8196,16 +8196,16 @@ class noneDBQuery {
      * @param string $field GeoJSON field name
      * @param float $lon Center longitude
      * @param float $lat Center latitude
-     * @param float $distanceKm Distance in kilometers
+     * @param float $distanceMeters Distance in meters
      * @return self
      */
-    public function withinDistance(string $field, float $lon, float $lat, float $distanceKm): self {
+    public function withinDistance(string $field, float $lon, float $lat, float $distanceMeters): self {
         $this->spatialFilters[] = [
             'type' => 'withinDistance',
             'field' => $field,
             'lon' => $lon,
             'lat' => $lat,
-            'distance' => $distanceKm
+            'distance' => $distanceMeters
         ];
         return $this;
     }
@@ -8233,6 +8233,7 @@ class noneDBQuery {
 
     /**
      * Find K nearest records to a point
+     * Returns records with _distance in meters
      * @param string $field GeoJSON field name
      * @param float $lon Center longitude
      * @param float $lat Center latitude

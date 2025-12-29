@@ -124,7 +124,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find highly rated places near Sultanahmet
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 2)  // 2km radius
+            ->withinDistance('location', 28.978, 41.006, 2000)  // 2000m radius
             ->where(['rating' => ['$gte' => 4.5]])
             ->get();
 
@@ -142,7 +142,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find popular places (>100 reviews) near Sultanahmet
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 2)
+            ->withinDistance('location', 28.978, 41.006, 2000)
             ->where(['review_count' => ['$gt' => 100]])
             ->get();
 
@@ -207,7 +207,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find everything except fast food
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 5)
+            ->withinDistance('location', 28.978, 41.006, 5000)
             ->where(['category' => ['$ne' => 'fast_food']])
             ->get();
 
@@ -225,7 +225,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find restaurants or cafes near Sultanahmet
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 2)
+            ->withinDistance('location', 28.978, 41.006, 2000)
             ->where(['category' => ['$in' => ['restaurant', 'cafe']]])
             ->get();
 
@@ -267,7 +267,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find places NOT serving turkish or french food
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 10)
+            ->withinDistance('location', 28.978, 41.006, 10000)
             ->where(['cuisine' => ['$nin' => ['turkish', 'french']]])
             ->get();
 
@@ -285,7 +285,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find moderately priced places (2-3 range) near Sultanahmet
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 2)
+            ->withinDistance('location', 28.978, 41.006, 2000)
             ->where(['price_range' => ['$gte' => 2, '$lte' => 3]])
             ->get();
 
@@ -302,7 +302,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find good but not perfect places (4.0-4.5)
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 5)
+            ->withinDistance('location', 28.978, 41.006, 5000)
             ->where(['rating' => ['$gte' => 4.0, '$lt' => 4.6]])
             ->get();
 
@@ -321,7 +321,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Complex query: near, highly rated, affordable, with delivery
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 3)
+            ->withinDistance('location', 28.978, 41.006, 3000)
             ->where([
                 'rating' => ['$gte' => 4.0],
                 'price_range' => ['$lte' => 3],
@@ -370,7 +370,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find places with "Sultan" in name
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 5)
+            ->withinDistance('location', 28.978, 41.006, 5000)
             ->where(['name' => ['$like' => 'Sultan']])
             ->get();
 
@@ -386,7 +386,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find places starting with "B"
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 10)
+            ->withinDistance('location', 28.978, 41.006, 10000)
             ->where(['name' => ['$like' => '^B']])
             ->get();
 
@@ -417,7 +417,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
 
         // Find places with delivery option specified
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 2)
+            ->withinDistance('location', 28.978, 41.006, 2000)
             ->where(['delivery' => ['$exists' => true]])
             ->get();
 
@@ -427,7 +427,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
 
         // Find places without delivery option specified
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 2)
+            ->withinDistance('location', 28.978, 41.006, 2000)
             ->where(['delivery' => ['$exists' => false]])
             ->get();
 
@@ -445,7 +445,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find affordable places, sorted by rating
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 5)
+            ->withinDistance('location', 28.978, 41.006, 5000)
             ->where(['price_range' => ['$lte' => 3]])
             ->sort('rating', 'desc')
             ->get();
@@ -465,7 +465,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find highly rated places, sorted by distance
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 10)
+            ->withinDistance('location', 28.978, 41.006, 10000)
             ->where(['rating' => ['$gte' => 4.0]])
             ->withDistance('location', 28.978, 41.006)
             ->sort('_distance', 'asc')
@@ -488,7 +488,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         $userLon = 28.978;
         $userLat = 41.006;
-        $maxDeliveryRadius = 3; // km
+        $maxDeliveryRadius = 3000; // meters
 
         // User wants: Turkish food, open now, delivery available, affordable, good rating
         $results = $this->noneDB->query($this->testDbName)
@@ -520,7 +520,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Tourist at Sultanahmet looking for popular, highly reviewed restaurants
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 2)
+            ->withinDistance('location', 28.978, 41.006, 2000)
             ->where([
                 'category' => 'restaurant',
                 'review_count' => ['$gte' => 100],
@@ -544,7 +544,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // User wants anything except fast food and cafes
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 10)
+            ->withinDistance('location', 28.978, 41.006, 10000)
             ->where([
                 'category' => ['$nin' => ['fast_food', 'cafe']],
                 'open_now' => true
@@ -564,7 +564,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find cheapest options with acceptable ratings
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 5)
+            ->withinDistance('location', 28.978, 41.006, 5000)
             ->where([
                 'price_range' => ['$lte' => 2],
                 'rating' => ['$gte' => 3.5]
@@ -587,7 +587,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Search in area with no data (London)
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', -0.1276, 51.5074, 1)
+            ->withinDistance('location', -0.1276, 51.5074, 1000)
             ->where(['rating' => ['$gte' => 4.0]])
             ->get();
 
@@ -601,7 +601,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // Find places with impossibly high rating
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 5)
+            ->withinDistance('location', 28.978, 41.006, 5000)
             ->where(['rating' => ['$gt' => 5.0]])
             ->get();
 
@@ -615,7 +615,7 @@ class SpatialOperatorCombinationTest extends noneDBTestCase
     {
         // $in with empty array should return nothing
         $results = $this->noneDB->query($this->testDbName)
-            ->withinDistance('location', 28.978, 41.006, 5)
+            ->withinDistance('location', 28.978, 41.006, 5000)
             ->where(['category' => ['$in' => []]])
             ->get();
 

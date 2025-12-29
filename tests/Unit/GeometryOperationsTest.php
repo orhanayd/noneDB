@@ -152,12 +152,12 @@ class GeometryOperationsTest extends noneDBTestCase
     {
         $method = $this->getPrivateMethod('haversineDistance');
 
-        // Istanbul to Ankara (approx 350 km)
+        // Istanbul to Ankara (approx 350 km = 350000 meters)
         $distance = $method->invoke($this->noneDB, 28.9784, 41.0082, 32.8597, 39.9334);
 
-        // Allow 10km tolerance
-        $this->assertGreaterThan(340, $distance);
-        $this->assertLessThan(360, $distance);
+        // Allow 10km tolerance (in meters)
+        $this->assertGreaterThan(340000, $distance);
+        $this->assertLessThan(360000, $distance);
     }
 
     /**
