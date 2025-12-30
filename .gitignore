@@ -34,3 +34,4 @@ CLAUDE.md
 # Config files (contain secrets)
 .nonedb
 !.nonedb.example
+/db
