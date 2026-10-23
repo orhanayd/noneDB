@@ -4,10 +4,10 @@
  * Tests various operations with different dataset sizes
  */
 
-require_once __DIR__ . '/../noneDB.php';
+require __DIR__ . '/_bootstrap.php';
 
-$db = new noneDB();
-$testDb = 'perf_test_' . time();
+$db = exampleDb();
+$testDb = 'perf-test-' . time(); // database names: letters, digits, space, ' and - only
 
 function formatTime($ms) {
     if ($ms < 1) return '<1 ms';
@@ -29,21 +29,14 @@ function benchmark($callback) {
     return ['time' => $time, 'result' => $result];
 }
 
+// Data size of a database, all shards included (as reported by getDBs())
 function getFileSize($db, $dbName) {
-    $reflection = new ReflectionClass($db);
-    $prop = $reflection->getProperty('dbDir');
-    $prop->setAccessible(true);
-    $dbDir = $prop->getValue($db);
-
-    $method = $reflection->getMethod('hashDBName');
-    $method->setAccessible(true);
-    $hash = $method->invoke($db, $dbName);
-
-    $file = $dbDir . $hash . '-' . $dbName . '.nonedb';
-    return file_exists($file) ? filesize($file) : 0;
+    $info = $db->getDBs($dbName);
+    return is_array($info) ? $info['size'] : '-';
 }
 
-$sizes = [100, 1000, 10000, 50000, 100000];
+// Sizes to test: php performance.php 100,1000   (default: up to 100K records)
+$sizes = isset($argv[1]) ? array_map('intval', explode(',', $argv[1])) : [100, 1000, 10000, 50000, 100000];
 $results = [];
 
 echo "=== noneDB Performance Benchmark ===\n\n";
@@ -55,7 +48,7 @@ foreach ($sizes as $size) {
     echo "--- Testing with " . number_format($size) . " records ---\n";
 
     $results[$size] = [];
-    $dbName = $testDb . '_' . $size;
+    $dbName = $testDb . '-' . $size;
 
     // Generate test data
     $data = [];
@@ -252,12 +245,12 @@ foreach ($sizes as $size) {
     // Memory
     $results[$size]['memory'] = memory_get_peak_usage(true);
     echo "Peak Memory: " . formatMemory($results[$size]['memory']) . "\n";
-    echo "File Size: " . formatMemory($results[$size]['filesize']) . "\n";
+    echo "File Size: " . $results[$size]['filesize'] . "\n";
 
     echo "\n";
 
     // Cleanup this db
-    $db->delete($dbName, []);
+    $db->dropDB($dbName);
     gc_collect_cycles();
 }
 
@@ -315,7 +308,7 @@ echo "| Records | File Size | Peak Memory |\n";
 echo "|---------|-----------|-------------|\n";
 foreach ($sizes as $size) {
     $sizeLabel = $size >= 1000 ? number_format($size) : $size;
-    echo "| {$sizeLabel} | " . formatMemory($results[$size]['filesize']) . " | " . formatMemory($results[$size]['memory']) . " |\n";
+    echo "| {$sizeLabel} | " . $results[$size]['filesize'] . " | " . formatMemory($results[$size]['memory']) . " |\n";
 }
 
 echo "\nBenchmark complete!\n";

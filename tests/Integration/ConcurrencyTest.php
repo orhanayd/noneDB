@@ -16,7 +16,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function rapidSequentialInserts(): void
     {
-        $dbName = 'rapid_insert_test';
+        $dbName = 'rapid-insert-test';
 
         // Perform rapid sequential inserts
         for ($i = 0; $i < 50; $i++) {
@@ -34,7 +34,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function rapidSequentialReads(): void
     {
-        $dbName = 'rapid_read_test';
+        $dbName = 'rapid-read-test';
 
         // Setup data
         $this->noneDB->insert($dbName, [
@@ -55,7 +55,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function insertThenImmediateRead(): void
     {
-        $dbName = 'insert_read_test';
+        $dbName = 'insert-read-test';
 
         for ($i = 0; $i < 20; $i++) {
             // Insert
@@ -74,7 +74,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function updateThenImmediateRead(): void
     {
-        $dbName = 'update_read_test';
+        $dbName = 'update-read-test';
 
         $this->noneDB->insert($dbName, ['counter' => 0]);
 
@@ -98,7 +98,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function clearStatCacheEffectiveness(): void
     {
-        $dbName = 'statcache_test';
+        $dbName = 'statcache-test';
 
         // Insert initial data
         $this->noneDB->insert($dbName, ['value' => 'initial']);
@@ -126,7 +126,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function multipleInstancesConcurrent(): void
     {
-        $dbName = 'multi_instance_test';
+        $dbName = 'multi-instance-test';
 
         // Test config for creating new instances
         $testConfig = [
@@ -156,7 +156,9 @@ class ConcurrencyTest extends noneDBTestCase
 
         // Clear db1's index cache to force re-read
         $cacheProperty = $reflector->getProperty('indexCache');
-        $cacheProperty->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) {
+            $cacheProperty->setAccessible(true); // no effect since 8.1, deprecated in 8.5
+        }
         $cacheProperty->setValue($db1, []);
 
         // Read from instance 1 - fresh read with cleared cache
@@ -169,7 +171,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function fileLockPreventsCorruption(): void
     {
-        $dbName = 'lock_test';
+        $dbName = 'lock-test';
 
         // Insert initial data
         $this->noneDB->insert($dbName, ['id' => 0]);
@@ -197,7 +199,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function retryMechanismDoesNotHang(): void
     {
-        $dbName = 'retry_test';
+        $dbName = 'retry-test';
 
         // Insert data
         $this->noneDB->insert($dbName, ['data' => 'test']);
@@ -220,7 +222,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function emptyFileHandling(): void
     {
-        $dbName = 'empty_file_test';
+        $dbName = 'empty-file-test';
 
         // Create DB
         $this->noneDB->createDB($dbName);
@@ -237,7 +239,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function largeDataHandling(): void
     {
-        $dbName = 'large_data_test';
+        $dbName = 'large-data-test';
 
         // Insert large record
         $largeData = [
@@ -260,7 +262,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function writeReadWriteSequence(): void
     {
-        $dbName = 'wrw_test';
+        $dbName = 'wrw-test';
 
         // Write
         $this->noneDB->insert($dbName, ['step' => 1]);
@@ -292,7 +294,7 @@ class ConcurrencyTest extends noneDBTestCase
      */
     public function getDBsDoesNotBlockOperations(): void
     {
-        $dbName = 'getdbs_test';
+        $dbName = 'getdbs-test';
 
         $this->noneDB->insert($dbName, ['data' => 'test']);
 

@@ -20,15 +20,9 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function sqlInjectionAttemptInDBName(): void
     {
-        $maliciousName = "test'; DROP TABLE users; --";
-
-        $result = $this->noneDB->createDB($maliciousName);
-
-        $this->assertTrue($result);
-
-        // Verify DB was created safely
-        $info = $this->noneDB->getDBs($maliciousName);
-        $this->assertIsArray($info);
+        // Apostrophes, spaces and hyphens are allowed; ';' is not, so the name is rejected
+        $this->expectException(\InvalidArgumentException::class);
+        $this->noneDB->createDB("test'; DROP TABLE users; --");
     }
 
     /**
@@ -36,7 +30,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function sqlInjectionAttemptInData(): void
     {
-        $dbName = 'sql_injection_test';
+        $dbName = 'sql-injection-test';
 
         $maliciousData = [
             'name' => "'; DROP TABLE users; --",
@@ -55,7 +49,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function xssAttemptInData(): void
     {
-        $dbName = 'xss_test';
+        $dbName = 'xss-test';
 
         $xssData = [
             'content' => '<script>alert("XSS")</script>',
@@ -74,15 +68,16 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function pathTraversalAttemptInDBName(): void
     {
-        $maliciousName = '../../../etc/passwd';
+        try {
+            $this->noneDB->createDB('../../../etc/passwd');
+            $this->fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('invalid database name', $e->getMessage());
+        }
 
-        // The hash function should neutralize path traversal
-        $result = $this->noneDB->createDB($maliciousName);
-
-        $this->assertTrue($result);
-
-        // Should NOT create file outside db directory
+        // Nothing created outside (or inside) the db directory
         $this->assertFileDoesNotExist('/etc/passwd.json');
+        $this->assertSame([], glob($this->testDbDir . '*passwd*'));
     }
 
     /**
@@ -90,12 +85,8 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function nullByteInjectionAttempt(): void
     {
-        $dbName = "test\x00malicious";
-
-        // Should handle null bytes safely
-        $result = $this->noneDB->createDB($dbName);
-
-        $this->assertTrue($result);
+        $this->expectException(\InvalidArgumentException::class);
+        $this->noneDB->createDB("test\x00malicious");
     }
 
     // ==========================================
@@ -107,14 +98,23 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function unicodeInDatabaseName(): void
     {
-        $unicodeName = 'veritabanı_测试_データ';
+        // v3.2.0: non-ASCII names are rejected instead of being stripped (stripping let names collide)
+        try {
+            $this->noneDB->createDB('veritabanı_测试_データ');
+            $this->fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('invalid database name', $e->getMessage());
+        }
 
-        $this->noneDB->createDB($unicodeName);
-        $this->noneDB->insert($unicodeName, ['data' => 'test']);
-
-        $result = $this->noneDB->find($unicodeName, 0);
-
-        $this->assertCount(1, $result);
+        // 'çalışan' used to be stripped to 'alan' and write into that database; now it is rejected
+        $this->noneDB->insert('alan', ['tip' => 'alan']);
+        try {
+            $this->noneDB->insert('çalışan', ['tip' => 'çalışan']);
+            $this->fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('invalid database name', $e->getMessage());
+        }
+        $this->assertSame(['alan'], array_column($this->noneDB->find('alan', 0), 'tip'), "nothing leaked into 'alan'");
     }
 
     /**
@@ -122,7 +122,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function unicodeInData(): void
     {
-        $dbName = 'unicode_data_test';
+        $dbName = 'unicode-data-test';
 
         $unicodeData = [
             'turkish' => 'Türkçe karakterler: ğüşıöç',
@@ -146,7 +146,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function specialCharactersInFieldNames(): void
     {
-        $dbName = 'special_fields_test';
+        $dbName = 'special-fields-test';
 
         $data = [
             'field-with-dash' => 'value1',
@@ -186,7 +186,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function veryLongFieldName(): void
     {
-        $dbName = 'long_field_test';
+        $dbName = 'long-field-test';
         $longFieldName = str_repeat('field', 100);
 
         $data = [$longFieldName => 'value'];
@@ -202,7 +202,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function veryLongStringValue(): void
     {
-        $dbName = 'long_value_test';
+        $dbName = 'long-value-test';
         $longValue = str_repeat('x', 1000000); // 1MB string
 
         $data = ['content' => $longValue];
@@ -218,7 +218,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function deeplyNestedData(): void
     {
-        $dbName = 'nested_test';
+        $dbName = 'nested-test';
 
         // Create 10-level deep nested array
         $nested = ['level' => 10, 'data' => 'deepest'];
@@ -238,10 +238,10 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function emptyStringDatabaseName(): void
     {
-        $result = $this->noneDB->createDB('');
-
-        // Empty string should still work (hash will be consistent)
-        $this->assertTrue($result);
+        // v3.2.0: an empty name is invalid; checkDB() reports false, other operations throw
+        $this->assertFalse($this->noneDB->checkDB(''));
+        $this->expectException(\InvalidArgumentException::class);
+        $this->noneDB->createDB('');
     }
 
     /**
@@ -266,7 +266,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function booleanValues(): void
     {
-        $dbName = 'boolean_test';
+        $dbName = 'boolean-test';
 
         $data = [
             ['flag' => true],
@@ -287,7 +287,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function numericStringVsInteger(): void
     {
-        $dbName = 'numeric_test';
+        $dbName = 'numeric-test';
 
         $data = [
             ['value' => 123],
@@ -312,7 +312,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function floatValues(): void
     {
-        $dbName = 'float_test';
+        $dbName = 'float-test';
 
         $data = [
             'price' => 19.99,
@@ -332,7 +332,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function nullValues(): void
     {
-        $dbName = 'null_test';
+        $dbName = 'null-test';
 
         $data = [
             'name' => 'test',
@@ -351,7 +351,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function emptyArrayValue(): void
     {
-        $dbName = 'empty_array_test';
+        $dbName = 'empty-array-test';
 
         $data = [
             'items' => [],
@@ -396,7 +396,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function jsonSpecialCharacters(): void
     {
-        $dbName = 'json_special_test';
+        $dbName = 'json-special-test';
 
         $data = [
             'quotes' => 'He said "Hello"',
@@ -418,7 +418,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function jsonControlCharacters(): void
     {
-        $dbName = 'control_chars_test';
+        $dbName = 'control-chars-test';
 
         $data = [
             'content' => "text\r\nwith\tcontrol\x00chars",
@@ -439,7 +439,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function rapidCreateDeleteCycle(): void
     {
-        $dbName = 'rapid_cycle_test';
+        $dbName = 'rapid-cycle-test';
 
         for ($i = 0; $i < 10; $i++) {
             $this->noneDB->insert($dbName, ['iteration' => $i]);
@@ -458,7 +458,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function findAfterMultipleDeletes(): void
     {
-        $dbName = 'find_after_delete_test';
+        $dbName = 'find-after-delete-test';
 
         // Insert multiple records
         for ($i = 0; $i < 5; $i++) {
@@ -480,7 +480,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function updateAfterPartialDelete(): void
     {
-        $dbName = 'update_after_delete_test';
+        $dbName = 'update-after-delete-test';
 
         $this->noneDB->insert($dbName, [
             ['id' => 1, 'status' => 'active'],
@@ -532,7 +532,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function operationsOnEmptyFile(): void
     {
-        $dbName = 'empty_file_test';
+        $dbName = 'empty-file-test';
 
         // Create empty file
         $this->noneDB->createDB($dbName);
@@ -600,7 +600,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function findByKeyZero(): void
     {
-        $dbName = 'key_zero_test';
+        $dbName = 'key-zero-test';
 
         $this->noneDB->insert($dbName, [
             ['name' => 'first'],
@@ -619,7 +619,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function deleteByKeyZero(): void
     {
-        $dbName = 'delete_key_zero_test';
+        $dbName = 'delete-key-zero-test';
 
         $this->noneDB->insert($dbName, [
             ['name' => 'first'],

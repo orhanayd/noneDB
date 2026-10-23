@@ -5,8 +5,9 @@
  * Demonstrates inserting multiple records at once.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'employees', 'orders', 'products');
 
 echo "=== noneDB Multiple Insert Example ===\n\n";
 

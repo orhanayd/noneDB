@@ -1,5 +1,199 @@
 # noneDB Changelog
 
+## v3.2.0 (2026-10-23)
+
+### Reliability, security and correctness release
+
+This release fixes every finding of the full code review (see `CODE_REVIEW.md`). Most changes are
+internal; the few behaviour changes are listed under **Upgrade notes** below.
+
+---
+
+### Upgrade notes (read before upgrading)
+
+1. **secretKey is validated.** An empty, missing, non-string or placeholder key
+   (`CHANGE_THIS_TO_A_SECURE_RANDOM_STRING`, ...) now throws `InvalidArgumentException`.
+   If your databases were created with the placeholder key, re-key them once:
+   ```php
+   noneDB::migrateKey('/path/to/db', 'CHANGE_THIS_TO_A_SECURE_RANDOM_STRING', bin2hex(random_bytes(32)));
+   // then put the new key in .nonedb
+   ```
+2. **Database names are validated, not sanitized.** Only `A-Z a-z 0-9`, space, `'` and `-` are allowed.
+   Other characters (`_`, `.`, `!`, non-ASCII, ...) throw `InvalidArgumentException` instead of being
+   silently removed (`"my_db"` used to become `"mydb"`, and `"çalışan"` became `"alan"`, colliding with
+   another database). Data written under the old, sanitized name is still there: use that name
+   (e.g. `"mydb"`) or rename your code's names to valid ones.
+3. **Relative `dbDir` in `.nonedb` is resolved against the `.nonedb` file** (`./db/` used to follow the
+   running script, `db/` the working directory). Web pages and CLI/cron scripts therefore share one
+   database directory. In a config array a relative `dbDir` follows the entry script. If an old
+   directory exists and the new one doesn't, it keeps being used and an `E_USER_DEPRECATED` notice
+   tells you to move it.
+4. **A config array is merged over the `.nonedb` file** (as the documentation always said). Before, an
+   array without `secretKey` silently ran with an empty key.
+5. **The write buffer is off by default** (`bufferEnabled: false`). Direct writes are now faster and
+   always visible to other processes. Buffers left by older versions are flushed automatically.
+6. **Keys never change.** `compact()` keeps keys on sharded databases too (it used to renumber them),
+   and drops shards that became empty.
+7. **Reads never create anything.** `find()`, `count()`, `getDBs('name')`, `join()`, spatial queries...
+   on a database that doesn't exist return an empty result (or `false` when `autoCreateDB` is off) and
+   create no files. Only writes (`insert`, `createDB`, ...) create databases.
+8. **Floats keep their type.** `2.0` is stored as `2.0` and read back as a float (it used to come back
+   as the integer `2`). Already stored values are unchanged.
+9. **`lockTimeout` is honoured.** Waiting longer than `lockTimeout` seconds for a database lock throws
+   `RuntimeException` (it used to fall back to waiting forever). `0` waits forever.
+10. **`noneDB.php` no longer sets `memory_limit` to `-1`** when it is included.
+11. **Lock files carry state.** Each database has a `{db}.nonedb.lock` file holding a small state record
+    (change counter, pending buffer, index journal). Don't delete lock files while processes use the
+    database. Old-version leftovers (pre-3.2 buffer files, missing index list) are looked for once per
+    database, not on every operation. Don't run 3.1 and 3.2 on the same database directory; if you go
+    back to 3.1 and later return to 3.2, delete the `*.nonedb.lock` files first (with no process
+    running) so that check runs again.
+
+### Concurrency and durability
+
+- **Database-level locking.** Every operation holds a lock on its database for its whole duration
+  (shared for reads, exclusive for writes), across processes and instances. Concurrent inserts,
+  updates and deletes no longer lose records or reuse keys (K-01).
+- **Caches can't go stale.** A generation counter in the lock file's state record invalidates every
+  cached index, meta and field/spatial index of a database as soon as another process writes it
+  (K-07, Y-11, Y-13).
+- **Atomic file writes.** Index, meta and other JSON files are written to a temp file and renamed;
+  a crash can no longer leave a truncated index (Y-14). Unencodable data (invalid UTF-8, `NAN`, `INF`)
+  is rejected before anything is written (K-03).
+- **Self-healing indexes.** A missing, corrupt or out-of-date key index is rebuilt from the data file;
+  deletions append a tombstone line so deleted records stay deleted after a rebuild. A torn last line
+  (crash during an append) is cut off. Records are verified against their key when read.
+- Lock file handles are opened close-on-exec: programs started by the process don't inherit them (an
+  inherited copy would keep a lock held after the process died in the middle of a write).
+- **Write journal.** Field indexes, spatial indexes and shard counters are rebuilt automatically if a
+  writer dies half-way through an operation (the journal entry lives in the lock file's state record).
+- **Idempotent buffer flush.** A crash during a buffer flush can no longer lose or duplicate records (K-08).
+- Tested with real `SIGKILL` crashes and multi-process stress tests (`tests/Regression`).
+
+### Performance
+
+- **No per-operation checks for old versions.** The lock file is read on every lock acquisition anyway;
+  its state record says whether the database was already checked for pre-3.2 leftovers, whether the
+  write buffer holds records and whether the index journal has entries. Normal reads and writes
+  therefore don't stat buffer files, glob for old files or re-derive the index list. Pre-3.0 data files
+  are converted when their (missing) index is first needed.
+- Lock file handles stay open between operations (one per database, at most 64; never shared with a
+  forked child, never trusted after the file was replaced), and the change counter is written once per
+  write session with a single fixed-size write.
+- Loaded key indexes are trusted until another process writes the database (no `stat` per read).
+- Query builder: `where()`/`orWhere()` filters are compiled once per query (operators validated,
+  `$like`/`$regex` compiled), sort keys are computed once per record, and reading records in file order
+  no longer sorts the offset map when it is already in order.
+- `new noneDB()` no longer resolves the script directory unless a relative `dbDir` needs it, and a
+  `dbDir` given in the config array skips resolving the file's one.
+- Query sorting uses `array_multisort` on precomputed sort keys (same order as before, stable on every
+  PHP version).
+- `query()->nearest(k)` combined with other filters reads the nearest candidates in growing batches
+  instead of putting every record in distance order (same results; it used to sort the whole database
+  since k is applied after the other filters).
+
+### Security
+
+- `secretKey` is always honoured: the persistent hash cache is per key
+  (`.nonedb_hash_cache_<fingerprint>`, mode 0600) and can no longer let a wrong key read data or
+  "poison" the right key (S-01, S-02, S-03, S-14). The old `.nonedb_hash_cache` file is ignored
+  (`migrateKey()` removes it).
+- The key is never shown by `print_r`/`var_dump`/`var_export`, and instances can't be serialized (S-09).
+- New database directories get an `.htaccess` (`Require all denied`) and an empty `index.html` (S-06).
+- `noneDB::migrateKey($dir, $old, $new)` re-keys existing databases (also those from before 3.2, without
+  leaving anything under the old key).
+- A `secretKey` given in the config array is always validated as given: `null` is rejected also when
+  there is no `.nonedb` file (it was reported as a missing config file) and in dev mode (it was silently
+  replaced by the predictable dev mode key).
+- Config values are validated (`shardSize`, `lockTimeout`, `lockRetryDelay`, `autoCompactThreshold`).
+
+### Storage engine
+
+- Pre-3.0 files are detected safely: a record whose first field is `data` is no longer mistaken for the
+  old format and destroyed (K-02).
+- Sharding: keys come from `meta.nextKey` and the shard size stored in each database's meta, so
+  reopening with a different `shardSize` is safe (Y-10); migration never reuses keys (K-06); key lookups
+  on sharded databases see new records (Y-09); empty shards are removed by `compact()`.
+- Auto-compaction triggers when deleted/superseded records exceed the threshold relative to the file
+  (not to the key counter) (O-22).
+- Key filters accept integers and digit strings only (`'abc'`, `null`, `true`, `1.9` match nothing) and
+  are combined (AND) with the other filters (Y-15, Y-16). `null` filters behave the same in `find`,
+  `update` and `delete` (Y-17). Malformed `update()` input is rejected (Y-18).
+- New `dropDB($name)`.
+
+### Field and spatial indexes
+
+- Indexed fields are recorded in `{db}.nonedb.indexes`; field names may contain any characters
+  (`e-mail`, `şehir`, `first.name`) (Y-08). New shards, `null` values and type changes are indexed
+  correctly (Y-12). Index files written by older versions are rebuilt on first use.
+- Batch operations write each index file once (P-02).
+- Spatial: indexes work on sharded databases (Y-02), cover new shards (Y-05) and survive migration
+  (Y-04); buffered inserts are indexed (Y-01); the R-tree can no longer loop forever (Y-03).
+- `nearest()` no longer cuts through a rounding tie at its search radius: a record just outside the
+  radius whose distance rounds to the same value (and has the smaller key) was skipped although it sorts
+  first.
+- Spatial queries: correct results near the antimeridian and the poles (Y-06); `nearest()` with
+  `maxDistance` returns the matches it finds (Y-07); `withinDistance()` measures to the nearest point of
+  a geometry (a point inside a polygon is at distance 0); `withinPolygon()` accepts MultiPolygon and
+  checks edges, not only vertices; queries without hits return immediately (O-24, O-34).
+- GeoJSON validation rejects NaN/INF, strings as coordinates, self-intersecting rings and holes outside
+  their shell; ring closure is compared numerically.
+
+### Query builder
+
+- `where()` calls are combined with AND (they used to overwrite the same field) (Y-21).
+- `orWhere()` without `where()` returns only the records matching an OR group (it returned everything) (Y-20).
+- Operators compare by type: numbers (and numeric strings) numerically, strings lexically; `null`,
+  booleans and arrays never satisfy `$gt/$gte/$lt/$lte/between` (O-10). Unknown operators and invalid
+  operands (`$in` without an array, a broken `$regex`) throw, whether or not there are records (O-11).
+- `like()`, `$like` and `$regex` are safe: like patterns are literal except a leading `^` / trailing `$`;
+  invalid regular expressions throw `InvalidArgumentException` (Y-19).
+- `sort()` is a stable total order (missing/null first, then booleans, numbers, strings, arrays); several
+  `sort()` calls sort by several fields (Y-22, O-12).
+- `count()`, `withDistance()`, `nearest()`+`where()`, `groupBy()` key types, `search()` (Unicode,
+  ignores `key`) fixed (O-01, O-04..O-08). `withDistance()` measures like `withinDistance()`/`nearest()`
+  (0 inside a polygon, else to the nearest point of the geometry); it used the centroid, so a polygon
+  could pass a 1 km filter and show a larger `_distance`.
+- The direct `$db->between()` compares like `query()->between()` (it used PHP's loose comparison, so
+  e.g. `true` was "between" 100 and 500).
+- `removeFields()` removes fields from the stored records only; `select/except/join/withDistance`
+  output never reaches storage (K-04, Y-26).
+- `update()`, `delete()` and `removeFields()` run selection and write under one lock; the reads of one
+  query (`get()`, `count()`, aggregates) run under one shared lock, so they see one state of the database.
+
+### Other
+
+- `getDBs()` lists each database once, includes sharded databases with their total size (O-03).
+- `limit([])` and `sort([])` return `[]` (D-05). Typo "paramters" fixed (D-06).
+- Removed dead code (legacy `.idx` key index, unused helpers); the query builder no longer uses Reflection.
+- Examples use `examples/_bootstrap.php`, run from any directory and can be run repeatedly.
+- Distance and centroid memo caches keep working when full (the older half is dropped) (D-08).
+- Docs: `join()` example corrected (the record is attached under the foreign database's name), and the
+  docs were checked against the code (return shapes, error messages, `whereNot()`/`notBetween()`
+  semantics, spatial distance options).
+- Benchmark scripts (`tests/*_benchmark.php`, `tests/sleekdb_comparison.php`) use their own temporary
+  directory and key; `performance_benchmark.php` and `sleekdb_comparison.php` used to delete every file
+  in the project's `db/` directory. Sizes can be passed on the command line (`php tests/performance_benchmark.php 100,1000`).
+  New `tests/operation_benchmark.php` measures single-operation latency and can compare two versions;
+  `docs/BENCHMARKS.md` was re-measured (3.2 vs 3.1 on the same machine).
+
+### Test Results
+
+- **PHP 8.5 compatible.** Tested on PHP 7.4, 8.2, 8.4 and 8.5 (Linux and macOS); CI runs 7.4 to 8.5.
+  PHPUnit now fails on deprecations, so a new PHP version's deprecations show up in CI. The tests no
+  longer call `Reflection*::setAccessible()` on PHP 8.1+ (deprecated in 8.5), tests that kill child
+  processes don't go through a shell (with dash as `/bin/sh` the shell was killed and the child kept
+  running), and the dev mode test runs in its own process (its constant leaked into later tests).
+- **1084 tests** (about 19,000 assertions), new suite `tests/Regression` (Regression):
+  one or more tests per review finding, multi-process tests, real `SIGKILL` crash tests, differential
+  fuzzing against an independent model, lock-state tests.
+- Expectations of existing tests changed only where a documented behaviour change requires it
+  (database name validation, secretKey validation, `limit([])`/`sort([])`, `insert([])`, `orWhere()` and
+  repeated `where()` semantics).
+
+---
+
+
 ## v3.1.0 (2025-12-29)
 
 ### Major: Spatial Indexing + MongoDB-Style Comparison Operators

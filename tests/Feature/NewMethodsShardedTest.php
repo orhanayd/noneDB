@@ -10,7 +10,7 @@ use noneDB\Tests\noneDBTestCase;
  */
 class NewMethodsShardedTest extends noneDBTestCase
 {
-    private string $shardedDbName = 'sharded_test_db';
+    private string $shardedDbName = 'sharded-test-db';
 
     protected function setUp(): void
     {
@@ -221,13 +221,13 @@ class NewMethodsShardedTest extends noneDBTestCase
     public function joinOnShardedDb(): void
     {
         // Create a small non-sharded lookup table
-        $this->noneDB->insert('city_info', [
+        $this->noneDB->insert('city-info', [
             ['name' => 'Istanbul', 'country' => 'Turkey', 'population' => 15000000],
             ['name' => 'Ankara', 'country' => 'Turkey', 'population' => 5500000],
         ]);
 
         $results = $this->noneDB->query($this->shardedDbName)
-            ->join('city_info', 'city', 'name')
+            ->join('city-info', 'city', 'name')
             ->get();
 
         $this->assertCount(12, $results);
@@ -235,8 +235,8 @@ class NewMethodsShardedTest extends noneDBTestCase
         // Check Istanbul and Ankara have joined data
         $istanbulRecords = array_filter($results, fn($r) => $r['city'] === 'Istanbul');
         foreach ($istanbulRecords as $record) {
-            $this->assertNotNull($record['city_info']);
-            $this->assertEquals('Turkey', $record['city_info']['country']);
+            $this->assertNotNull($record['city-info']);
+            $this->assertEquals('Turkey', $record['city-info']['country']);
         }
     }
 
@@ -372,7 +372,7 @@ class NewMethodsShardedTest extends noneDBTestCase
         $dbDir = $this->getPrivateProperty('dbDir');
         $hashMethod = $this->getPrivateMethod('hashDBName');
 
-        foreach ([$this->shardedDbName, 'city_info'] as $db) {
+        foreach ([$this->shardedDbName, 'city-info'] as $db) {
             $hash = $hashMethod->invoke($this->noneDB, $db);
             $files = glob($dbDir . $hash . '-' . $db . '*');
             foreach ($files as $file) {

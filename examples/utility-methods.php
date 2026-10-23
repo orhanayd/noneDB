@@ -5,8 +5,9 @@
  * Demonstrates first(), last(), exists(), sort(), and limit() methods.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'users');
 
 echo "=== noneDB Utility Methods Example ===\n\n";
 

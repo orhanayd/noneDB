@@ -9,10 +9,15 @@ require_once __DIR__ . '/../noneDB.php';
 ini_set('memory_limit', '-1');
 set_time_limit(0);
 
-$db = new noneDB();
+// Own directory and key: the benchmark wipes its directory between sizes, never your databases
+$benchDir = sys_get_temp_dir() . '/nonedb_performance_benchmark/';
+if (!is_dir($benchDir)) {
+    mkdir($benchDir, 0777, true);
+}
+$db = new noneDB(['secretKey' => 'nonedb-benchmark-key-not-for-production', 'dbDir' => $benchDir]);
 
-// Test sizes
-$sizes = [100, 1000, 10000, 50000, 100000, 500000];
+// Test sizes (override: php tests/performance_benchmark.php 100,1000)
+$sizes = isset($argv[1]) ? array_map('intval', explode(',', $argv[1])) : [100, 1000, 10000, 50000, 100000, 500000];
 
 // Colors
 function green($t) { return "\033[32m{$t}\033[0m"; }
@@ -25,6 +30,11 @@ function formatTime($ms) {
     if ($ms < 1) return "<1 ms";
     if ($ms >= 1000) return round($ms / 1000, 1) . " s";
     return round($ms) . " ms";
+}
+
+// Sub-millisecond times with 3 decimals
+function formatFine($ms) {
+    return $ms < 1 ? number_format($ms, 3) . " ms" : formatTime($ms);
 }
 
 // Generate test record
@@ -43,7 +53,7 @@ function generateRecord($i) {
 }
 
 echo blue("╔════════════════════════════════════════════════════════════════════╗\n");
-echo blue("║              noneDB Performance Benchmark v3.0                     ║\n");
+echo blue("║              noneDB Performance Benchmark v3.2                     ║\n");
 echo blue("║    JSONL Engine + Static Cache + Batch Read + Single-Pass Filter  ║\n");
 echo blue("╚════════════════════════════════════════════════════════════════════╝\n\n");
 
@@ -54,23 +64,28 @@ $results = [
     'write' => ['insert' => [], 'update' => [], 'delete' => []],
     'read' => ['find_all' => [], 'find_key' => [], 'find_filter' => []],
     'query' => ['count' => [], 'distinct' => [], 'sum' => [], 'like' => [], 'between' => [], 'sort' => [], 'first' => [], 'exists' => []],
-    'chain' => ['whereIn' => [], 'orWhere' => [], 'search' => [], 'groupBy' => [], 'select' => [], 'complex' => []]
+    'chain' => ['whereIn' => [], 'orWhere' => [], 'search' => [], 'groupBy' => [], 'select' => [], 'complex' => []],
+    'key' => ['cold' => [], 'warm' => []],
+    'storage' => ['size' => [], 'memory' => []]
 ];
 
 foreach ($sizes as $size) {
-    $dbName = "perftest_" . $size;
+    $dbName = "perftest-" . $size;
 
     echo yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     echo yellow("  Testing with " . number_format($size) . " records\n");
     echo yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    // Clean up ENTIRE db folder for fair benchmarking
-    $files = glob(__DIR__ . '/../db/*');
+    // Clean up the benchmark folder for fair benchmarking
+    $files = glob($benchDir . '*');
     foreach ($files as $f) {
         if (is_file($f)) @unlink($f);
     }
     noneDB::clearStaticCache();  // Clear static cache for accurate benchmarks
     clearstatcache(true);
+    if (function_exists('memory_reset_peak_usage')) {
+        memory_reset_peak_usage(); // PHP 8.2+: peak memory per size
+    }
 
     // ===== WRITE OPERATIONS =====
     echo "\n" . cyan("  Write Operations:\n");
@@ -104,8 +119,8 @@ foreach ($sizes as $size) {
     $results['write']['delete'][$size] = $deleteTime;
     echo "    delete():     " . green(formatTime($deleteTime)) . "\n";
 
-    // Re-insert for read tests (clean entire db folder)
-    $files = glob(__DIR__ . '/../db/*');
+    // Re-insert for read tests (clean the benchmark folder)
+    $files = glob($benchDir . '*');
     foreach ($files as $f) {
         if (is_file($f)) @unlink($f);
     }
@@ -137,6 +152,28 @@ foreach ($sizes as $size) {
     $findFilterTime = (microtime(true) - $start) * 1000;
     $results['read']['find_filter'][$size] = $findFilterTime;
     echo "    find(filter): " . green(formatTime($findFilterTime)) . "\n";
+
+    // KEY LOOKUP: cold (nothing cached, like the first lookup of a new process) and warm (average of 200)
+    noneDB::clearStaticCache();
+    $start = microtime(true);
+    $db->find($dbName, ['key' => $testKey]);
+    $results['key']['cold'][$size] = (microtime(true) - $start) * 1000;
+    $keys = [];
+    for ($k = 0; $k < 200; $k++) {
+        $keys[] = ($k * 7919) % $size; // spread over every shard
+    }
+    foreach ($keys as $key) {
+        $db->find($dbName, ['key' => $key]); // warm-up: loads each shard's index once
+    }
+    $start = microtime(true);
+    foreach ($keys as $key) {
+        $db->find($dbName, ['key' => $key]);
+    }
+    $results['key']['warm'][$size] = (microtime(true) - $start) * 1000 / count($keys);
+    echo "    key lookup:   " . green(formatFine($results['key']['cold'][$size]) . " cold, " . formatFine($results['key']['warm'][$size]) . " warm") . "\n";
+
+    $info = $db->getDBs($dbName);
+    $results['storage']['size'][$size] = is_array($info) ? $info['size'] : '-';
 
     // ===== QUERY & AGGREGATION =====
     echo "\n" . cyan("  Query & Aggregation:\n");
@@ -249,8 +286,10 @@ foreach ($sizes as $size) {
     $results['chain']['complex'][$size] = $complexTime;
     echo "    complex:      " . green(formatTime($complexTime)) . "\n";
 
+    $results['storage']['memory'][$size] = memory_get_peak_usage(true);
+
     // Cleanup
-    $files = glob(__DIR__ . '/../db/*' . $dbName . '*');
+    $files = glob($benchDir . '*' . $dbName . '*');
     foreach ($files as $f) @unlink($f);
 
     echo "\n";
@@ -287,5 +326,15 @@ printTable("Write Operations", $results['write'], $sizes);
 printTable("Read Operations", $results['read'], $sizes);
 printTable("Query & Aggregation", $results['query'], $sizes);
 printTable("Method Chaining (v2.1+)", $results['chain'], $sizes);
+
+echo "### Key Lookup\n| Records | Cold (first access) | Warm (cached) |\n|---------|-----|-----|\n";
+foreach ($sizes as $s) {
+    echo "| " . number_format($s) . " | " . formatFine($results['key']['cold'][$s]) . " | " . formatFine($results['key']['warm'][$s]) . " |\n";
+}
+echo "\n### Storage & Memory\n| Records | Data Size | Peak Memory (incl. generated data) |\n|---------|-----|-----|\n";
+foreach ($sizes as $s) {
+    echo "| " . number_format($s) . " | " . $results['storage']['size'][$s] . " | " . round($results['storage']['memory'][$s] / 1048576) . " MB |\n";
+}
+echo "\n";
 
 echo green("\nBenchmark completed!\n");

@@ -34,9 +34,9 @@ class CheckDBTest extends noneDBTestCase
      */
     public function checkDBReturnsFalseForOnlySpecialChars(): void
     {
-        $result = $this->noneDB->checkDB('@#$%^&*()');
-
-        $this->assertFalse($result, 'Only special chars should return false after sanitization');
+        // v3.2.0: invalid names are rejected instead of being silently stripped
+        $this->expectException(\InvalidArgumentException::class);
+        $this->noneDB->checkDB('@#$%^&*()');
     }
 
     /**
@@ -81,10 +81,14 @@ class CheckDBTest extends noneDBTestCase
      */
     public function checkDBSanitizesDBName(): void
     {
-        $result = $this->noneDB->checkDB('test<script>db');
-
-        $this->assertTrue($result);
-        $this->assertDatabaseExists('testscriptdb');
+        // v3.2.0: names with characters outside [A-Za-z0-9' -] are rejected, nothing is created
+        try {
+            $this->noneDB->checkDB('test<script>db');
+            $this->fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('invalid database name', $e->getMessage());
+        }
+        $this->assertDatabaseNotExists('testscriptdb');
     }
 
     /**
@@ -132,11 +136,14 @@ class CheckDBTest extends noneDBTestCase
      */
     public function checkDBRemovesUnicodeChars(): void
     {
-        $result = $this->noneDB->checkDB('veritabanı');
-
-        $this->assertTrue($result);
-        // 'ı' and 'ş' etc should be removed
-        $this->assertDatabaseExists('veritaban');
+        // v3.2.0: non-ASCII characters are rejected ('çalışan' used to collide with 'alan')
+        try {
+            $this->noneDB->checkDB('veritabanı');
+            $this->fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('invalid database name', $e->getMessage());
+        }
+        $this->assertDatabaseNotExists('veritaban');
     }
 
     /**
@@ -177,9 +184,9 @@ class CheckDBTest extends noneDBTestCase
      */
     public function checkDBReturnsFalseForZero(): void
     {
-        // Testing with integer 0
-        $result = $this->noneDB->checkDB(0);
-
-        $this->assertFalse($result);
+        // v3.2.0: "0" is a valid database name (it used to be treated as empty)
+        $this->assertTrue($this->noneDB->checkDB(0));
+        $this->noneDB->insert('0', ['v' => 1]);
+        $this->assertCount(1, $this->noneDB->find('0', 0));
     }
 }

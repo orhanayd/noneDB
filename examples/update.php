@@ -5,8 +5,9 @@
  * Demonstrates various ways to update records.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'users');
 
 echo "=== noneDB Update Example ===\n\n";
 
@@ -125,7 +126,7 @@ $result = $db->update("users", [
     ["set" => ["key" => 999]]  // ERROR: 'key' is reserved
 ]);
 echo "   Result: " . json_encode($result) . "\n";
-// Output: {"n":0,"error":"Please check your update paramters"}
+// Output: {"n":0,"error":"Please check your update parameters"}
 
 // -----------------------------------------
 // 9. Show Final Data

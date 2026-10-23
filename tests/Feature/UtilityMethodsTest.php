@@ -268,9 +268,9 @@ class UtilityMethodsTest extends noneDBTestCase
      */
     public function sortReturnsFalseForEmptyArray(): void
     {
-        $result = $this->noneDB->sort([], 'age');
-
-        $this->assertFalse($result);
+        // v3.2.0: sorting an empty result returns an empty result (it used to be false)
+        $this->assertSame([], $this->noneDB->sort([], 'age'));
+        $this->assertFalse($this->noneDB->sort('not an array', 'age'));
     }
 
     /**

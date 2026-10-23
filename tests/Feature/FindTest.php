@@ -297,7 +297,7 @@ class FindTest extends noneDBTestCase
      */
     public function findNonExistentDB(): void
     {
-        $result = $this->noneDB->find('nonexistent_db', 0);
+        $result = $this->noneDB->find('nonexistent-db', 0);
 
         // Should auto-create and return empty
         $this->assertIsArray($result);
@@ -381,11 +381,9 @@ class FindTest extends noneDBTestCase
      */
     public function findWithSpecialCharsInDBName(): void
     {
-        $this->noneDB->insert('test<>db', ['data' => 'test']);
-
-        $result = $this->noneDB->find('test<>db', 0);
-
-        $this->assertCount(1, $result);
+        // v3.2.0: invalid names are rejected on every operation
+        $this->expectException(\InvalidArgumentException::class);
+        $this->noneDB->find('test<>db', 0);
     }
 
     /**

@@ -52,8 +52,8 @@ function generateRecord($i) {
 }
 
 // Test directories
-$sleekDbDir = __DIR__ . '/sleekdb_bench/';
-$noneDbDir = __DIR__ . '/nonedb_bench/';
+$sleekDbDir = sys_get_temp_dir() . '/sleekdb_bench/';
+$noneDbDir = sys_get_temp_dir() . '/nonedb_bench/';
 
 // Cleanup function
 function cleanup($sleekDbDir, $noneDbDir) {
@@ -90,7 +90,7 @@ echo "SleekDB: v2.15 (cache OFF)\n";
 echo "noneDB: v2.3.0 (sharding ON, buffer ON/OFF)\n\n";
 
 // Test sizes
-$sizes = [100, 1000, 10000, 50000, 100000];
+$sizes = isset($argv[1]) ? array_map('intval', explode(',', $argv[1])) : [100, 1000, 10000, 50000, 100000];
 
 // Results storage
 $results = [];
@@ -212,15 +212,11 @@ foreach ($sizes as $size) {
     if (!is_dir($noneDbDir)) mkdir($noneDbDir, 0777, true);
 
     // =====================================================================
-    // NONEDB (DEFAULT - Buffer ON, Sharding ON)
+    // NONEDB (Buffer ON, Sharding ON; the default is buffer OFF since v3.2)
     // =====================================================================
-    echo magenta("  ┌─ noneDB (default: buffer ON, sharding ON) ───────────────────────┐\n");
+    echo magenta("  ┌─ noneDB (buffer ON, sharding ON) ────────────────────────────────┐\n");
 
-    $nonedb = new noneDB();
-    $ref = new ReflectionClass($nonedb);
-    $prop = $ref->getProperty('dbDir');
-    $prop->setAccessible(true);
-    $prop->setValue($nonedb, $noneDbDir);
+    $nonedb = new noneDB(['secretKey' => 'nonedb-benchmark-key-not-for-production', 'dbDir' => $noneDbDir, 'bufferEnabled' => true]);
 
     // Bulk Insert
     gc_collect_cycles();
@@ -305,12 +301,7 @@ foreach ($sizes as $size) {
     // =====================================================================
     echo magenta("  ┌─ noneDB (buffer OFF, sharding ON) ────────────────────────────────┐\n");
 
-    $nonedb2 = new noneDB();
-    $ref2 = new ReflectionClass($nonedb2);
-    $prop2 = $ref2->getProperty('dbDir');
-    $prop2->setAccessible(true);
-    $prop2->setValue($nonedb2, $noneDbDir);
-    $nonedb2->enableBuffering(false);
+    $nonedb2 = new noneDB(['secretKey' => 'nonedb-benchmark-key-not-for-production', 'dbDir' => $noneDbDir, 'bufferEnabled' => false]);
 
     // Bulk Insert (no buffer)
     gc_collect_cycles();

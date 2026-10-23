@@ -1,30 +1,38 @@
 # noneDB Performance Benchmarks
 
-Comprehensive performance benchmarks and database comparisons.
+Performance measurements of noneDB 3.2.0, compared with 3.1.0 and SleekDB.
 
-**Version:** 3.1.0
-**Test Environment:** PHP 8.2, macOS (Apple Silicon M-series)
+**Version:** 3.2.0
+**Test environment:** PHP 8.2.0 (CLI), macOS 15.8, Apple M2, 16 GB RAM
+**Measured:** 2026-10-24. The 3.1.0 numbers come from the same scripts, run on the same machine in the same session.
+
+All 3.2.0 numbers include the database lock every operation takes (shared for reads, exclusive for
+writes) and crash-safe writes. 3.1.0 took no lock for reads and overwrote index files in place.
 
 ---
 
 ## Table of Contents
 
 1. [Test Data Structure](#test-data-structure)
-2. [v3.0+ Optimizations](#v30-optimizations)
-3. [O(1) Key Lookup Performance](#o1-key-lookup-performance)
-4. [Write Operations](#write-operations)
-5. [Read Operations](#read-operations)
-6. [Query & Aggregation](#query--aggregation)
-7. [Method Chaining](#method-chaining)
-8. [Spatial Query Performance](#spatial-query-performance)
-9. [Storage & Memory](#storage--memory)
-10. [SleekDB Comparison](#sleekdb-comparison)
+2. [What Changed in 3.2](#what-changed-in-32)
+3. [Single Operations (5,000 records)](#single-operations-5000-records)
+4. [Key Lookup](#key-lookup)
+5. [3.2 vs 3.1 at Scale](#32-vs-31-at-scale)
+6. [Write Operations](#write-operations)
+7. [Read Operations](#read-operations)
+8. [Query & Aggregation](#query--aggregation)
+9. [Method Chaining](#method-chaining)
+10. [Comparison Operators](#comparison-operators)
+11. [Spatial Query Performance](#spatial-query-performance)
+12. [Storage & Memory](#storage--memory)
+13. [SleekDB Comparison](#sleekdb-comparison)
+14. [Running Benchmarks](#running-benchmarks)
 
 ---
 
 ## Test Data Structure
 
-All benchmarks use 7 fields per record:
+The performance and SleekDB benchmarks use 7 fields per record:
 
 ```php
 [
@@ -40,47 +48,95 @@ All benchmarks use 7 fields per record:
 
 ---
 
-## v3.0+ Optimizations
+## What Changed in 3.2
 
-| Optimization | Improvement |
-|--------------|-------------|
-| **Static Cache Sharing** | 80%+ for multi-instance |
-| **Batch File Read** | 40-50% for bulk reads |
-| **Batch Update/Delete** | **25-30x faster** for bulk operations |
-| **Single-Pass Filtering** | 30% for complex queries |
-| **O(1) Sharded Key Lookup** | True O(1) for all database sizes |
-| **O(1) Count** | **100-330x faster** (index metadata lookup) |
-| **Hash Cache Persistence** | Faster cold startup |
-| **atomicReadFast()** | Optimized index reads |
+| Change | Effect |
+|--------|--------|
+| **Database lock per operation** | Correct results with several processes; costs ~0.01-0.02 ms per call |
+| **Lock file state record** | Generation counter, buffer flag, index journal and the one-time old-version check are read with the lock: no per-operation `stat`/`glob` |
+| **Kept lock handles** | No `fopen`/`fclose` per operation (pid- and inode-checked) |
+| **Atomic index writes** (temp file + rename) | A crash never leaves a half-written index; a single-record write costs ~0.15 ms more |
+| **Batch inserts/updates** | Records encoded and appended in one write, each index written once: insert 10x, filtered update 4x faster |
+| **Per-shard key lookup** | A cold lookup loads only the target shard's index: 5 ms instead of 156 ms at 500K |
+| **Compiled query filters** | `where()`/`orWhere()` compiled once per query; `array_multisort` on precomputed sort keys |
+| **Adaptive `query()->nearest()`** | With other filters, searches a growing radius instead of sorting the whole database |
 
-### v3.1.0 Spatial Optimizations
+### Earlier optimizations
 
-| Optimization | Improvement |
-|--------------|-------------|
-| **Parent Pointer Map** | O(1) parent lookup (was O(n)) |
-| **Linear Split Algorithm** | O(n) seed selection (was O(n²)) |
-| **Dirty Flag Pattern** | Single disk write per batch (was n writes) |
-| **Distance Memoization** | Cached Haversine calculations |
-| **Centroid Caching** | Cached geometry centroids |
-| **Node Size 32** | Fewer tree levels and splits |
-| **Adaptive nearest()** | Exponential radius expansion |
+| Optimization | Since |
+|--------------|-------|
+| JSONL storage with byte-offset index (O(1) key lookup) | 3.0 |
+| Static cache shared across instances | 3.0 |
+| Batch file read (64 KB buffered) | 3.0 |
+| O(1) count from index metadata | 3.0 |
+| R-tree spatial index: parent pointer map, linear split, dirty-flag batch writes, node size 32 | 3.1 |
+| Distance and centroid memoization | 3.1 |
 
 ---
 
-## O(1) Key Lookup Performance
+## Single Operations (5,000 records)
 
-Key lookups are **constant time** regardless of database size after cache warm-up.
+Milliseconds per call, best of 5 runs (`tests/operation_benchmark.php`).
 
-| Records | Cold (first access) | Warm (cached) | Notes |
-|---------|---------------------|---------------|-------|
-| 100 | 3 ms | **0.03 ms** | Non-sharded |
-| 1K | 3 ms | **0.03 ms** | Non-sharded |
-| 10K | 49 ms | **0.03 ms** | Sharded (1 shard) |
-| 50K | 243 ms | **0.05 ms** | Sharded (5 shards) |
-| 100K | 497 ms | **0.05 ms** | Sharded (10 shards) |
-| 500K | 2.5 s | **0.16 ms** | Sharded (50 shards) |
+| Operation | 3.1.0 | 3.2.0 |
+|-----------|-------|-------|
+| insert (5,000 records, one call) | 175.4 | **17.2** |
+| insert (one record) | **0.169** | 0.321 |
+| find (all records) | 16.2 | **10.4** |
+| find (by key) | **0.026** | 0.047 |
+| find (filter) | 17.4 | **12.0** |
+| count | **0.002** | 0.018 |
+| query (where range + sort + limit) | 25.5 | **19.9** |
+| update (by key) | **0.830** | 0.977 |
+| update (filter, 1,250 records) | 102.6 | **25.0** |
+| delete (by key) | **0.933** | 1.1 |
+| find (filter on indexed field) | 4.0 | **3.2** |
+| insert (one record, indexed field) | **1.2** | 1.5 |
+| new instance + find (by key) | **0.029** | 0.056 |
 
-> **Key insight:** Cold time includes loading shard index. After cache warm-up, all lookups are near-instant.
+Bulk work is much faster. The smallest operations pay a fixed cost: the lock (all operations) and the
+atomic index replacement (single writes). Those are what make 3.2 safe with concurrent processes and
+crashes.
+
+---
+
+## Key Lookup
+
+`find($db, ['key' => $k])`. Cold = nothing cached (first lookup of a new process); warm = average of
+200 lookups spread over all shards, after each shard's index was loaded once.
+
+| Records | Cold 3.1.0 | Cold 3.2.0 | Warm 3.1.0 | Warm 3.2.0 |
+|---------|------------|------------|------------|------------|
+| 100 | 3 ms | **0.21 ms** | **0.030 ms** | 0.045 ms |
+| 1,000 | 3 ms | **0.45 ms** | **0.030 ms** | 0.046 ms |
+| 10,000 | 9 ms | **3 ms** | **0.030 ms** | 0.054 ms |
+| 50,000 | 22 ms | **5 ms** | **0.042 ms** | 0.057 ms |
+| 100,000 | 37 ms | **4 ms** | 0.060 ms | **0.057 ms** |
+| 500,000 | 156 ms | **5 ms** | 0.206 ms | **0.066 ms** |
+
+A cold lookup in 3.2 reads one shard's index, so it stays ~5 ms at any size.
+
+---
+
+## 3.2 vs 3.1 at Scale
+
+Same script (`tests/performance_benchmark.php`), same machine.
+
+| Operation | 100K 3.1.0 | 100K 3.2.0 | 500K 3.1.0 | 500K 3.2.0 |
+|-----------|------------|------------|------------|------------|
+| insert() | 3.6 s | **1.3 s** | 18.8 s | **7.1 s** |
+| update() (city filter) | 2.1 s | **455 ms** | 19 s | **2.4 s** |
+| delete() (department filter) | 2.4 s | **831 ms** | 20.8 s | **4.4 s** |
+| find(all) | 598 ms | **376 ms** | 2.7 s | **1.8 s** |
+| find(key), first after insert | 490 ms | **<1 ms** | 2.5 s | **<1 ms** |
+| find(filter) | 514 ms | **336 ms** | 2.7 s | **1.8 s** |
+| distinct() | 586 ms | **361 ms** | 3 s | **2.1 s** |
+| sort() + limit | 1.3 s | **452 ms** | 7.1 s | **2.7 s** |
+| search() | **736 ms** | 849 ms | **4.2 s** | 4.6 s |
+| select() | 864 ms | **596 ms** | 4.6 s | **3.6 s** |
+| complex chain | 676 ms | **484 ms** | 3.7 s | **2.7 s** |
+
+`search()` is slightly slower because it now matches Unicode text case-insensitively (`İzmir` = `izmir`).
 
 ---
 
@@ -88,11 +144,11 @@ Key lookups are **constant time** regardless of database size after cache warm-u
 
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| insert() | 7 ms | 25 ms | 289 ms | 1.5 s | 3.1 s | 16.5 s |
-| update() | 1 ms | 11 ms | 120 ms | 660 ms | 1.5 s | 11.3 s |
-| delete() | 2 ms | 13 ms | 144 ms | 773 ms | 1.7 s | 12.5 s |
+| insert() | 6 ms | 7 ms | 121 ms | 596 ms | 1.3 s | 7.1 s |
+| update() | <1 ms | 4 ms | 40 ms | 216 ms | 455 ms | 2.4 s |
+| delete() | 2 ms | 8 ms | 78 ms | 426 ms | 831 ms | 4.4 s |
 
-> Update/delete use batch operations for efficient bulk modifications (single index write per shard)
+> `update()` changes the ~20% of records in one city, `delete()` the ~20% in one department.
 
 ---
 
@@ -100,11 +156,9 @@ Key lookups are **constant time** regardless of database size after cache warm-u
 
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| find(all) | 3 ms | 23 ms | 48 ms | 268 ms | 602 ms | 2.7 s |
-| find(key) | <1 ms | <1 ms | 49 ms | 243 ms | 497 ms | 2.5 s |
-| find(filter) | <1 ms | 4 ms | 50 ms | 252 ms | 515 ms | 2.6 s |
-
-> **find(key)** first call includes index loading. Subsequent calls: ~0.05ms (see O(1) table above)
+| find(all) | <1 ms | 3 ms | 28 ms | 169 ms | 376 ms | 1.8 s |
+| find(key) | <1 ms | <1 ms | <1 ms | <1 ms | <1 ms | <1 ms |
+| find(filter) | <1 ms | 3 ms | 32 ms | 163 ms | 336 ms | 1.8 s |
 
 ---
 
@@ -113,15 +167,13 @@ Key lookups are **constant time** regardless of database size after cache warm-u
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
 | count() | **<1 ms** | **<1 ms** | **<1 ms** | **<1 ms** | **<1 ms** | **<1 ms** |
-| distinct() | <1 ms | 4 ms | 49 ms | 270 ms | 590 ms | 2.9 s |
-| sum() | <1 ms | 4 ms | 49 ms | 261 ms | 588 ms | 3 s |
-| like() | <1 ms | 5 ms | 57 ms | 311 ms | 670 ms | 3.4 s |
-| between() | <1 ms | 4 ms | 53 ms | 288 ms | 628 ms | 3.2 s |
-| sort() | <1 ms | 8 ms | 105 ms | 565 ms | 1.3 s | 7.1 s |
-| first() | <1 ms | 4 ms | 50 ms | 285 ms | 589 ms | 2.9 s |
-| exists() | <1 ms | 4 ms | 49 ms | 272 ms | 588 ms | 3 s |
-
-> **count()** uses O(1) index metadata lookup - no record scanning required!
+| distinct() | <1 ms | 3 ms | 34 ms | 170 ms | 361 ms | 2.1 s |
+| sum() | <1 ms | 3 ms | 31 ms | 167 ms | 354 ms | 2.1 s |
+| like() | <1 ms | 4 ms | 38 ms | 209 ms | 432 ms | 2.5 s |
+| between() | <1 ms | 4 ms | 43 ms | 229 ms | 502 ms | 2.7 s |
+| sort() | <1 ms | 4 ms | 38 ms | 211 ms | 452 ms | 2.7 s |
+| first() | <1 ms | 3 ms | 31 ms | 168 ms | 364 ms | 1.8 s |
+| exists() | <1 ms | 3 ms | 32 ms | 173 ms | 370 ms | 1.9 s |
 
 ---
 
@@ -129,111 +181,106 @@ Key lookups are **constant time** regardless of database size after cache warm-u
 
 | Operation | 100 | 1K | 10K | 50K | 100K | 500K |
 |-----------|-----|-----|------|------|-------|-------|
-| whereIn() | <1 ms | 4 ms | 53 ms | 302 ms | 657 ms | 3.6 s |
-| orWhere() | <1 ms | 4 ms | 55 ms | 316 ms | 673 ms | 3.5 s |
-| search() | <1 ms | 5 ms | 61 ms | 350 ms | 762 ms | 4.2 s |
-| groupBy() | <1 ms | 4 ms | 52 ms | 307 ms | 657 ms | 3.5 s |
-| select() | <1 ms | 5 ms | 57 ms | 400 ms | 854 ms | 4.5 s |
-| complex chain | <1 ms | 5 ms | 60 ms | 322 ms | 684 ms | 3.6 s |
-
-> **Complex chain:** `where() + whereIn() + between() + select() + sort() + limit()`
+| whereIn() | <1 ms | 3 ms | 35 ms | 227 ms | 419 ms | 2.5 s |
+| orWhere() | <1 ms | 4 ms | 39 ms | 220 ms | 460 ms | 2.5 s |
+| search() | <1 ms | 7 ms | 76 ms | 398 ms | 849 ms | 4.6 s |
+| groupBy() | <1 ms | 3 ms | 35 ms | 209 ms | 434 ms | 2.4 s |
+| select() | <1 ms | 4 ms | 38 ms | 277 ms | 596 ms | 3.6 s |
+| complex chain | <1 ms | 4 ms | 39 ms | 235 ms | 484 ms | 2.7 s |
 
 ---
 
-## Comparison Operators (v3.1.0)
+## Comparison Operators
 
-MongoDB-style operators add minimal overhead:
+`tests/operator_benchmark.php`, best of 3 runs (records with 10 fields, including a GeoJSON point).
 
 | Operator | 100 | 500 | 1K | 5K |
 |----------|-----|-----|-----|-----|
-| `$gt` | 0.7 ms | 3 ms | 6 ms | 33 ms |
-| `$gte + $lte` (range) | 0.7 ms | 3.4 ms | 7 ms | 38 ms |
-| `$in` (2 values) | 0.7 ms | 3.3 ms | 6.5 ms | 36 ms |
-| `$nin` (2 values) | 0.7 ms | 3.5 ms | 7 ms | 37 ms |
-| `$ne` | 0.7 ms | 3 ms | 6 ms | 36 ms |
-| `$like` | 0.7 ms | 3.4 ms | 7 ms | 39 ms |
-| `$exists` | 0.6 ms | 3.2 ms | 6 ms | 37 ms |
-| Complex (4 operators) | 0.7 ms | 3.5 ms | 7.5 ms | 43 ms |
-
-> Operators add <1ms overhead per operation. Linear scaling with record count.
+| `$gt` | 0.68 ms | 2.9 ms | 5.8 ms | 29 ms |
+| `$gte + $lte` (range) | 0.72 ms | 3.5 ms | 7.1 ms | 36 ms |
+| `$in` (2 values) | 0.6 ms | 2.8 ms | 5.6 ms | 30 ms |
+| `$nin` (2 values) | 0.6 ms | 2.8 ms | 5.7 ms | 29 ms |
+| `$ne` | 0.59 ms | 2.8 ms | 5.5 ms | 30 ms |
+| `$like` | 0.64 ms | 3 ms | 6 ms | 32 ms |
+| `$exists` | 0.61 ms | 2.8 ms | 5.7 ms | 30 ms |
+| Complex (4 operators) | 0.8 ms | 3.7 ms | 7.5 ms | 40 ms |
 
 ---
 
 ## Spatial Query Performance
 
-Tested with R-tree spatial index (v3.1.0):
-
 | Operation | 100 | 500 | 1K | 5K |
 |-----------|-----|-----|-----|-----|
-| createSpatialIndex | 2.4 ms | 34 ms | 81 ms | 423 ms |
-| withinDistance (10km) | 3.1 ms | 16 ms | 32 ms | 166 ms |
-| withinBBox | 0.7 ms | 4.5 ms | 7 ms | 38 ms |
-| nearest(10) | 1.9 ms | 1.3 ms | 2 ms | 2.4 ms |
+| createSpatialIndex | 2.6 ms | 23 ms | 61 ms | 434 ms |
+| withinDistance (10 km) | 1.1 ms | 5.2 ms | 10.5 ms | 64 ms |
+| withinBBox | 0.31 ms | 1 ms | 2.1 ms | 10 ms |
+| nearest(10) | 0.33 ms | 1.4 ms | 2.6 ms | 3.1 ms |
 
-> Spatial queries use R-tree indexing for O(log n + k) performance where k = matching records.
+> The 10 km circle covers most of the test area, so `withinDistance` returns most records; its cost is
+> dominated by the matches, not by the R-tree.
 
 ### Spatial + Operator Combination
 
 | Query Type | 100 | 500 | 1K | 5K |
 |------------|-----|-----|-----|-----|
-| withinDistance only | 3 ms | 16 ms | 32 ms | 166 ms |
-| + where (simple) | 3 ms | 17 ms | 34 ms | 174 ms |
-| + where (`$gte`) | 3 ms | 17 ms | 33 ms | 175 ms |
-| + where (`$in`) | 3 ms | 16.5 ms | 33 ms | 174 ms |
-| + range (`$gte` + `$lte`) | 3 ms | 17 ms | 36 ms | 212 ms |
-| + complex (4 operators) | 3 ms | 16.5 ms | 34.5 ms | 179 ms |
-| + sort + limit | 3 ms | 17 ms | 35 ms | 183 ms |
-| nearest + operators + limit | 8 ms | 4.5 ms | 7 ms | 12 ms |
+| withinDistance + where (simple) | 1.1 ms | 5.5 ms | 11 ms | 64 ms |
+| + where (`$gte`) | 1.1 ms | 5.7 ms | 11 ms | 66 ms |
+| + where (`$in`) | 1.1 ms | 5.6 ms | 12.5 ms | 74 ms |
+| + range (`$gte` + `$lte`) | 1.2 ms | 6 ms | 12.4 ms | 70 ms |
+| + complex (4 operators) | 1.2 ms | 5.8 ms | 11.5 ms | 66 ms |
+| + sort + limit | 1.6 ms | 8 ms | 15 ms | 88 ms |
+| nearest(50) + operators + limit | 1.6 ms | 5.5 ms | 3.9 ms | 7.8 ms |
 
-> Spatial + operator combinations add minimal overhead. R-tree filtering happens first, then operators applied to candidates.
+> Since 3.2 `nearest(k)` returns the k nearest records **that match the other filters** (3.1 cut to k
+> first and then filtered, which could return fewer or wrong records). With a spatial index this uses a
+> growing search radius, so it stays fast as the database grows.
 
 ---
 
 ## Storage & Memory
 
-| Records | File Size | Peak Memory |
+| Records | Data Size | Peak Memory |
 |---------|-----------|-------------|
-| 100 | 10 KB | 2 MB |
-| 1,000 | 98 KB | 4 MB |
-| 10,000 | 1 MB | 8 MB |
-| 50,000 | 5 MB | 34 MB |
-| 100,000 | 10 MB | 134 MB |
-| 500,000 | 50 MB | ~600 MB |
+| 100 | 12 KB | 4 MB |
+| 1,000 | 127 KB | 6 MB |
+| 10,000 | 1.3 MB | 34 MB |
+| 50,000 | 6.5 MB | 124 MB |
+| 100,000 | 13 MB | 238 MB |
+| 500,000 | 66 MB | ~1.2 GB |
+
+> Peak memory of the benchmark process, including the generated test data and full result sets
+> (`find(all)` of 500K records); a single key lookup needs only one shard's index.
 
 ---
 
 ## SleekDB Comparison
 
-### Why Choose noneDB?
+`tests/sleekdb_comparison.php` with SleekDB 2.15.
 
-noneDB v3.0+ excels in **bulk operations** and **large datasets**:
+### Why Choose noneDB?
 
 | Strength | Performance |
 |----------|-------------|
-| **Bulk Insert** | **8-10x faster** than SleekDB |
-| **Find All** | **8-66x faster** at scale |
-| **Filter Queries** | **20-80x faster** at scale |
-| **Update Operations** | **15-40x faster** on large datasets |
-| **Delete Operations** | **5-23x faster** on large datasets |
-| **Count Operations** | **90-330x faster** (O(1) index lookup) |
-| **Complex Queries** | **22-70x faster** at scale |
-| **Large Datasets** | Handles 500K+ records with auto-sharding |
-| **Thread Safety** | Atomic file locking for concurrent access |
-| **Static Cache** | Cross-instance cache sharing |
+| **Bulk Insert** | **12-23x faster** than SleekDB |
+| **Find All** | **10-75x faster** |
+| **Filter Queries** | **11-53x faster** |
+| **Update Operations** | **9-48x faster** |
+| **Delete Operations** | **3.5-21x faster** |
+| **Count Operations** | **7-450x faster** (O(1) index lookup) |
+| **Complex Queries** | **7-18x faster** |
+| **Large Datasets** | Auto-sharding, 500K+ records |
+| **Concurrency** | Database-level locks across processes, crash recovery |
 | **Spatial Queries** | R-tree indexing (SleekDB: none) |
-
-**Best for:** Bulk operations, analytics, batch processing, filter-heavy workloads, count operations, geospatial queries
 
 ### When to Consider SleekDB?
 
 | Scenario | SleekDB Advantage |
 |----------|-------------------|
-| **High-frequency key lookups** | <1ms vs ~500ms cold (file-per-record architecture) |
+| **First key lookup of a process** | ≤2 ms vs up to 15 ms at 100K (noneDB loads one shard index first; later lookups take ~0.05 ms) |
 | **Very low memory** | Lower RAM usage |
 
-> **Note:** SleekDB stores each record as a separate file, making single-record lookups instant but bulk operations slow.
-
----
+> SleekDB stores each record as a separate file, so a single-record lookup is one file read while bulk
+> operations have to open every file.
 
 ### Architectural Differences
 
@@ -241,131 +288,63 @@ noneDB v3.0+ excels in **bulk operations** and **large datasets**:
 |---------|---------|--------|
 | **Storage** | One JSON file per record | JSONL + byte-offset index |
 | **ID Access** | Direct file read (O(1)) | Index lookup + seek |
-| **Bulk Read** | Traverse all files | Single file read |
+| **Bulk Read** | Traverse all files | Single file read per shard |
 | **Sharding** | None | Automatic (10K+) |
-| **Cache** | Per-query | Static cross-instance |
-| **Indexing** | None | Byte-offset (.jidx) |
-| **Spatial Index** | None | R-tree (v3.1) |
-
----
+| **Cache** | Per-query | Static cross-instance, validated per write |
+| **Indexing** | None | Byte-offset (.jidx), field indexes |
+| **Spatial Index** | None | R-tree |
 
 ### Detailed Benchmark Results
 
-#### Bulk Insert
+| Operation | 100 noneDB | 100 SleekDB | 1K noneDB | 1K SleekDB | 10K noneDB | 10K SleekDB | 50K noneDB | 50K SleekDB | 100K noneDB | 100K SleekDB |
+|-----------|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|
+| Bulk Insert | 2 ms | 21 ms | 7 ms | 175 ms | 120 ms | 1.97 s | 714 ms | 11.94 s | 1.25 s | 24.35 s |
+| Find All | <1 ms | 5 ms | 3 ms | 37 ms | 32 ms | 419 ms | 181 ms | 2.28 s | 372 ms | 27.98 s |
+| Find by Key (cold) | <1 ms | <1 ms | <1 ms | <1 ms | 3 ms | <1 ms | 4 ms | <1 ms | 15 ms | 2 ms |
+| Find with Filter | <1 ms | 4 ms | 3 ms | 47 ms | 32 ms | 411 ms | 174 ms | 2.41 s | 697 ms | 36.73 s |
+| Count | <1 ms | <1 ms | <1 ms | <1 ms | <1 ms | 4 ms | <1 ms | 17 ms | <1 ms | 34 ms |
+| Update | <1 ms | 7 ms | 5 ms | 73 ms | 41 ms | 974 ms | 229 ms | 4.89 s | 444 ms | 21.47 s |
+| Delete | 2 ms | 6 ms | 9 ms | 49 ms | 81 ms | 745 ms | 434 ms | 3.65 s | 937 ms | 19.72 s |
+| Complex Query | <1 ms | 5 ms | 4 ms | 39 ms | 47 ms | 464 ms | 173 ms | 2.33 s | 372 ms | 6.52 s |
 
-| Records | noneDB | SleekDB | Winner |
-|---------|--------|---------|--------|
-| 100 | 7ms | 24ms | **noneDB 3x** |
-| 1K | 26ms | 250ms | **noneDB 10x** |
-| 10K | 306ms | 2.89s | **noneDB 9x** |
-| 50K | 1.59s | 12.4s | **noneDB 8x** |
-| 100K | 3.34s | 30.76s | **noneDB 9x** |
+### Performance Ratio (noneDB vs SleekDB)
 
-#### Find All Records
+| Operation | 100 | 1K | 10K | 50K | 100K |
+|-----------|------|------|------|------|------|
+| Bulk Insert | **11.6x** | **23.4x** | **16.4x** | **16.7x** | **19.5x** |
+| Find All | **10x** | **10.6x** | **13.2x** | **12.6x** | **75.2x** |
+| Find by Key (cold) | 0.27x | 0.09x | 0.01x | 0.01x | 0.12x |
+| Find with Filter | **11.1x** | **13.4x** | **12.9x** | **13.9x** | **52.7x** |
+| Count | **7.2x** | **10.7x** | **64.5x** | **283.4x** | **447.9x** |
+| Update | **9.3x** | **14.9x** | **23.6x** | **21.3x** | **48.3x** |
+| Delete | **3.5x** | **5.4x** | **9.2x** | **8.4x** | **21x** |
+| Complex Query | **6.8x** | **11.1x** | **9.9x** | **13.5x** | **17.5x** |
 
-| Records | noneDB | SleekDB | Winner |
-|---------|--------|---------|--------|
-| 100 | 3ms | 28ms | **noneDB 8x** |
-| 1K | 7ms | 286ms | **noneDB 42x** |
-| 10K | 65ms | 2.71s | **noneDB 42x** |
-| 50K | 300ms | 16.83s | **noneDB 56x** |
-| 100K | 595ms | 39.03s | **noneDB 66x** |
-
-#### Find by Key (Single Record - Cold)
-
-| Records | noneDB | SleekDB | Winner |
-|---------|--------|---------|--------|
-| 100 | 3ms | <1ms | SleekDB |
-| 1K | 3ms | <1ms | SleekDB |
-| 10K | 55ms | <1ms | **SleekDB** |
-| 50K | 287ms | <1ms | **SleekDB** |
-| 100K | 561ms | <1ms | **SleekDB** |
-
-> **Note:** SleekDB's file-per-record design gives O(1) key lookup. noneDB must load shard index first (but subsequent lookups are O(1) with cache).
-
-#### Find with Filter
-
-| Records | noneDB | SleekDB | Winner |
-|---------|--------|---------|--------|
-| 100 | <1ms | 10ms | **noneDB 24x** |
-| 1K | 4ms | 94ms | **noneDB 25x** |
-| 10K | 49ms | 998ms | **noneDB 20x** |
-| 50K | 254ms | 13.18s | **noneDB 52x** |
-| 100K | 524ms | 41.64s | **noneDB 79x** |
-
-#### Count Operations
-
-| Records | noneDB | SleekDB | Winner |
-|---------|--------|---------|--------|
-| 100 | <1ms | <1ms | **noneDB 4x** |
-| 1K | <1ms | 1ms | **noneDB 11x** |
-| 10K | <1ms | 9ms | **noneDB 90x** |
-| 50K | <1ms | 51ms | **noneDB 330x** |
-| 100K | <1ms | 96ms | **noneDB 258x** |
-
-> **v3.0 Optimization:** noneDB uses O(1) index metadata lookup for count() - no record scanning!
-
-#### Update Operations
-
-| Records | noneDB | SleekDB | Winner |
-|---------|--------|---------|--------|
-| 100 | 1ms | 20ms | **noneDB 15x** |
-| 1K | 11ms | 188ms | **noneDB 17x** |
-| 10K | 118ms | 2.14s | **noneDB 18x** |
-| 50K | 669ms | 20.91s | **noneDB 31x** |
-| 100K | 1.53s | 61.27s | **noneDB 40x** |
-
-#### Delete Operations
-
-| Records | noneDB | SleekDB | Winner |
-|---------|--------|---------|--------|
-| 100 | 2ms | 10ms | **noneDB 5x** |
-| 1K | 15ms | 105ms | **noneDB 7x** |
-| 10K | 150ms | 1.27s | **noneDB 8x** |
-| 50K | 839ms | 14.61s | **noneDB 17x** |
-| 100K | 1.75s | 40.01s | **noneDB 23x** |
-
-#### Complex Query (where + sort + limit)
-
-| Records | noneDB | SleekDB | Winner |
-|---------|--------|---------|--------|
-| 100 | <1ms | 12ms | **noneDB 27x** |
-| 1K | 4ms | 114ms | **noneDB 30x** |
-| 10K | 55ms | 1.2s | **noneDB 22x** |
-| 50K | 295ms | 15.33s | **noneDB 52x** |
-| 100K | 591ms | 41.3s | **noneDB 70x** |
-
----
-
-### Summary
-
-| Use Case | Winner | Advantage |
-|----------|--------|-----------|
-| **Bulk Insert** | **noneDB** | 3-10x faster |
-| **Find All** | **noneDB** | 8-66x faster |
-| **Find with Filter** | **noneDB** | 20-79x faster |
-| **Update** | **noneDB** | 15-40x faster |
-| **Delete** | **noneDB** | 5-23x faster |
-| **Complex Query** | **noneDB** | 22-70x faster |
-| **Count** | **noneDB** | 4-330x faster (O(1) index lookup) |
-| **Spatial Queries** | **noneDB** | R-tree indexing (SleekDB: none) |
-| **Find by Key (cold)** | **SleekDB** | O(1) file access |
-
-> **Choose noneDB** for: Bulk operations, large datasets, filter queries, update/delete workloads, complex queries, count operations, geospatial queries
->
-> **Choose SleekDB** for: High-frequency single-record lookups by ID (cold cache scenarios)
+> Find by Key (cold) is the first lookup after the data was written and the caches were cleared. Warm
+> lookups take ~0.05 ms (see [Key Lookup](#key-lookup)).
 
 ---
 
 ## Running Benchmarks
 
-```bash
-# Performance benchmark
-php tests/performance_benchmark.php
+Every script uses its own temporary directory and key; none of them touches your databases.
 
-# SleekDB comparison (requires SleekDB installed)
-php tests/sleekdb_comparison.php
+```bash
+# Performance benchmark (default sizes 100 ... 500K; pass your own as a comma-separated list)
+php tests/performance_benchmark.php
+php tests/performance_benchmark.php 100,1000,10000
+
+# Single-operation latency; optionally compare another version of noneDB.php
+php tests/operation_benchmark.php
+php tests/operation_benchmark.php /path/to/other/noneDB.php 5   # best of 5
+
+# Comparison operators + spatial combinations
+php tests/operator_benchmark.php
 
 # Spatial benchmark
 php tests/spatial_benchmark.php
+
+# SleekDB comparison (requires the dev dependency rakibtg/sleekdb)
+php tests/sleekdb_comparison.php
+php tests/sleekdb_comparison.php 100,1000
 ```

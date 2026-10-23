@@ -35,3 +35,6 @@ CLAUDE.md
 .nonedb
 !.nonedb.example
 /db
+
+# Example databases
+/examples/db/

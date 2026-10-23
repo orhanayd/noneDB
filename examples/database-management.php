@@ -5,8 +5,9 @@
  * Demonstrates createDB(), checkDB(), and getDBs() methods.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'users', 'orders', 'products', 'my-new-database', 'my-database', 'user\'s data', 'auto-created-db');
 
 echo "=== noneDB Database Management Example ===\n\n";
 
@@ -20,12 +21,12 @@ echo "=== CREATE DATABASE ===\n\n";
 // -----------------------------------------
 echo "1. Create a New Database:\n";
 
-$result = $db->createDB("my_new_database");
-echo "   createDB('my_new_database'): " . ($result ? "true (created)" : "false (exists)") . "\n";
+$result = $db->createDB("my-new-database");
+echo "   createDB('my-new-database'): " . ($result ? "true (created)" : "false (exists)") . "\n";
 
 // Try to create again
-$result = $db->createDB("my_new_database");
-echo "   createDB('my_new_database') again: " . ($result ? "true (created)" : "false (already exists)") . "\n";
+$result = $db->createDB("my-new-database");
+echo "   createDB('my-new-database') again: " . ($result ? "true (created)" : "false (already exists)") . "\n";
 
 // -----------------------------------------
 // 2. Create Multiple Databases
@@ -57,22 +58,25 @@ echo "   checkDB('users'): " . ($exists ? "true" : "false") . "\n";
 echo "\n4. Check Non-existing Database (Auto-create enabled):\n";
 echo "   Note: autoCreateDB is enabled by default.\n";
 
-$exists = $db->checkDB("auto_created_db");
-echo "   checkDB('auto_created_db'): " . ($exists ? "true (auto-created)" : "false") . "\n";
+$exists = $db->checkDB("auto-created-db");
+echo "   checkDB('auto-created-db'): " . ($exists ? "true (auto-created)" : "false") . "\n";
 
 // -----------------------------------------
-// 5. Database Name Sanitization
+// 5. Database Name Rules
 // -----------------------------------------
-echo "\n5. Database Name Sanitization:\n";
-echo "   Only [A-Za-z0-9' -] allowed, others removed.\n\n";
+echo "\n5. Database Name Rules:\n";
+echo "   Only A-Z a-z 0-9, space, apostrophe (') and hyphen (-) are allowed.\n";
+echo "   Other characters are rejected with an InvalidArgumentException (since v3.2.0).\n\n";
 
-$db->createDB("test_db!");       // becomes "testdb"
 $db->createDB("my-database");    // hyphen is OK
-$db->createDB("user's data");    // apostrophe is OK
+$db->createDB("user's data");    // apostrophe and space are OK
+echo "   'my-database' and \"user's data\" created\n";
 
-echo "   'test_db!' becomes 'testdb'\n";
-echo "   'my-database' stays 'my-database'\n";
-echo "   \"user's data\" stays \"user's data\"\n";
+try {
+    $db->createDB("test_db!");
+} catch (InvalidArgumentException $e) {
+    echo "   'test_db!' rejected: " . $e->getMessage() . "\n";
+}
 
 // ==========================================
 // GET DATABASES
@@ -132,7 +136,7 @@ if ($info) {
 // -----------------------------------------
 echo "\n9. Check Non-existent Database Info:\n";
 
-$info = $db->getDBs("this_does_not_exist_xyz");
+$info = $db->getDBs("this-does-not-exist-xyz");
 echo "   Result: " . ($info === false ? "false (not found)" : json_encode($info)) . "\n";
 
 // ==========================================
@@ -177,6 +181,6 @@ echo "   - Consider sharding for large datasets\n";
 echo "\n3. Security:\n";
 echo "   - Change \$secretKey before production!\n";
 echo "   - Protect /db directory with .htaccess\n";
-echo "   - Validate/sanitize database names from user input\n";
+echo "   - Validate database names from user input (invalid names throw InvalidArgumentException)\n";
 
 echo "\n=== Database Management Examples Complete ===\n";

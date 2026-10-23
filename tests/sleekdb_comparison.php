@@ -12,8 +12,14 @@ use SleekDB\Store;
 ini_set('memory_limit', '-1');
 set_time_limit(0);
 
-// Test sizes
-$sizes = [100, 1000, 10000, 50000, 100000];
+// Test sizes (override: php tests/sleekdb_comparison.php 100,1000)
+$sizes = isset($argv[1]) ? array_map('intval', explode(',', $argv[1])) : [100, 1000, 10000, 50000, 100000];
+
+// Own directory and key: the benchmark wipes its directory, never your databases
+$benchDir = sys_get_temp_dir() . '/nonedb_sleekdb_comparison/';
+if (!is_dir($benchDir)) {
+    mkdir($benchDir, 0777, true);
+}
 
 // Colors
 function green($t) { return "\033[32m{$t}\033[0m"; }
@@ -61,11 +67,11 @@ function ratio($nonedb, $sleekdb) {
 }
 
 echo blue("╔══════════════════════════════════════════════════════════════════════════╗\n");
-echo blue("║           noneDB v3.0 vs SleekDB Comprehensive Benchmark                 ║\n");
+echo blue("║           noneDB v3.2 vs SleekDB Comprehensive Benchmark                 ║\n");
 echo blue("╚══════════════════════════════════════════════════════════════════════════╝\n\n");
 
 echo "PHP Version: " . PHP_VERSION . "\n";
-echo "noneDB: v3.0.0 (JSONL + Static Cache + Batch Read)\n";
+echo "noneDB: v3.2.0 (JSONL + database locks + static cache)\n";
 echo "SleekDB: v2.x\n\n";
 
 $results = [];
@@ -76,11 +82,11 @@ foreach ($sizes as $size) {
     echo yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
 
     // Cleanup - Clean ALL databases for fair benchmarking
-    $nonedbName = "benchmark_nonedb_" . $size;
-    $sleekdbDir = __DIR__ . "/sleekdb_benchmark_" . $size;
+    $nonedbName = "benchmark-nonedb-" . $size;
+    $sleekdbDir = sys_get_temp_dir() . "/sleekdb_benchmark_" . $size;
 
-    // Clean ENTIRE noneDB db folder
-    $files = glob(__DIR__ . '/../db/*');
+    // Clean the noneDB benchmark folder
+    $files = glob($benchDir . '*');
     foreach ($files as $f) {
         if (is_file($f)) @unlink($f);
     }
@@ -88,7 +94,7 @@ foreach ($sizes as $size) {
     clearstatcache(true);
 
     // Clean ALL SleekDB benchmark folders
-    $sleekDirs = glob(__DIR__ . '/sleekdb_benchmark_*');
+    $sleekDirs = glob(sys_get_temp_dir() . '/sleekdb_benchmark_*');
     foreach ($sleekDirs as $dir) {
         if (is_dir($dir)) {
             $files = glob($dir . '/*');
@@ -111,7 +117,7 @@ foreach ($sizes as $size) {
         $data[] = generateRecord($i);
     }
 
-    $nonedb = new noneDB();
+    $nonedb = new noneDB(['secretKey' => 'nonedb-benchmark-key-not-for-production', 'dbDir' => $benchDir]);
 
     // ===== BULK INSERT =====
     echo cyan("  Bulk Insert ($size records):\n");
@@ -286,7 +292,7 @@ foreach ($sizes as $size) {
     $results[$size]['complex'] = ['nonedb' => $nonedbComplex, 'sleekdb' => $sleekdbComplex];
 
     // Cleanup
-    $files = glob(__DIR__ . '/../db/*benchmark_nonedb_' . $size . '*');
+    $files = glob($benchDir . '*benchmark-nonedb-' . $size . '*');
     foreach ($files as $f) @unlink($f);
 
     if (is_dir($sleekdbDir)) {
