@@ -346,7 +346,11 @@ class SecurityConfigRegressionTest extends RegressionTestCase
     /** @test O-20 */
     public function includingDoesNotChangeMemoryLimit(): void
     {
-        $this->assertNotSame('-1', $this->runChild('echo ini_get("memory_limit");'));
+        // Start the child with a known limit: the environment's own php.ini may already say -1
+        // (GitHub's setup-php does), which says nothing about what including noneDB.php does
+        $script = $this->childScript('echo ini_get("memory_limit");'); // noneDB.php is required first
+        $out = trim((string)shell_exec(escapeshellarg(PHP_BINARY) . ' -d memory_limit=123M ' . escapeshellarg($script) . ' 2>&1'));
+        $this->assertSame('123M', $out);
     }
 
     /** @test D-01 */
