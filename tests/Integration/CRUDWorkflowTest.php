@@ -16,7 +16,7 @@ class CRUDWorkflowTest extends noneDBTestCase
      */
     public function completeCreateReadUpdateDeleteWorkflow(): void
     {
-        $dbName = 'workflow_test';
+        $dbName = 'workflow-test';
 
         // CREATE
         $insertResult = $this->noneDB->insert($dbName, [
@@ -57,7 +57,7 @@ class CRUDWorkflowTest extends noneDBTestCase
      */
     public function multipleOperationsSequence(): void
     {
-        $dbName = 'sequence_test';
+        $dbName = 'sequence-test';
 
         // Insert 5 users
         for ($i = 1; $i <= 5; $i++) {
@@ -118,7 +118,7 @@ class CRUDWorkflowTest extends noneDBTestCase
      */
     public function dataPersistenceAcrossInstances(): void
     {
-        $dbName = 'persistence_test';
+        $dbName = 'persistence-test';
 
         // Test config for creating new instances
         $testConfig = [
@@ -157,7 +157,7 @@ class CRUDWorkflowTest extends noneDBTestCase
      */
     public function databaseRecoveryAfterDeleteAll(): void
     {
-        $dbName = 'recovery_test';
+        $dbName = 'recovery-test';
 
         // Insert initial data
         $this->noneDB->insert($dbName, [
@@ -188,7 +188,7 @@ class CRUDWorkflowTest extends noneDBTestCase
      */
     public function bulkOperationsPerformance(): void
     {
-        $dbName = 'bulk_test';
+        $dbName = 'bulk-test';
 
         // Bulk insert
         $data = [];
@@ -217,7 +217,7 @@ class CRUDWorkflowTest extends noneDBTestCase
      */
     public function complexFilteringScenario(): void
     {
-        $dbName = 'filter_test';
+        $dbName = 'filter-test';
 
         // Insert diverse data
         $this->noneDB->insert($dbName, [
@@ -256,7 +256,7 @@ class CRUDWorkflowTest extends noneDBTestCase
      */
     public function updateThenDeleteSequence(): void
     {
-        $dbName = 'update_delete_test';
+        $dbName = 'update-delete-test';
 
         $this->noneDB->insert($dbName, ['name' => 'item1', 'quantity' => 10]);
 

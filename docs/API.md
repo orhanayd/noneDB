@@ -2,7 +2,13 @@
 
 Complete reference for all noneDB methods and operations.
 
-**Version:** 3.1.0
+**Version:** 3.2.0
+
+**Database names** may contain `A-Z a-z 0-9`, space, `'` and `-`; every method throws
+`InvalidArgumentException` for anything else (names are never changed silently). `"0"` is valid.
+
+**Locking:** every method locks its database for its whole duration (shared for reads, exclusive for
+writes). Waiting longer than `lockTimeout` seconds throws `RuntimeException`.
 
 ---
 
@@ -36,7 +42,26 @@ Check if database exists. Creates it if `autoCreateDB` is true.
 
 ```php
 $exists = $db->checkDB("users");
-// Returns: true or false
+// Returns: true or false (false for null / "")
+```
+
+### dropDB()
+
+Delete a database and all of its files (data, shards, indexes, buffers, metadata).
+
+```php
+$result = $db->dropDB("users");
+// ["success" => true, "files" => 7]   or   ["success" => false, "files" => 0, "error" => "Database does not exist"]
+```
+
+### migrateKey() (static)
+
+Re-key existing databases (all files of every database created with `$oldKey` are renamed). Run it
+while nothing else uses the databases, then put the new key in your config.
+
+```php
+$result = noneDB::migrateKey('/var/data/db', $oldKey, $newKey);
+// ["success" => true, "databases" => ["users", "orders"], "files" => 14, "error" => null]
 ```
 
 ### getDBs()
@@ -55,10 +80,13 @@ $dbs = $db->getDBs(true);
 //     ...
 // ]
 
-// Single database info
+// Single database info (false if it doesn't exist; never creates it)
 $info = $db->getDBs("users");
 // ["name" => "users", "createdTime" => 1703123456, "size" => "2,5 KB"]
 ```
+
+Only databases of the current `secretKey` are listed; sharded databases appear once, with the total
+size of their shards. Sizes use a comma as decimal separator (`"2,5 KB"`).
 
 ---
 
@@ -97,7 +125,17 @@ $db->insert("users", ["key" => "value"]);
 // Invalid data
 $db->insert("users", "not an array");
 // ["n" => 0, "error" => "insert data must be array"]
+
+// Empty data, or a mix of a list and named fields
+$db->insert("users", []);                              // ["n" => 0, "error" => "insert data must not be empty"]
+$db->insert("users", [0 => ["a" => 1], "name" => "x"]); // ["n" => 0, "error" => "insert data must be either one record or a list of records"]
+
+// Values JSON can't represent (invalid UTF-8, NAN, INF): nothing is written
+$db->insert("users", ["v" => NAN]);                  // ["n" => 0, "error" => "insert data cannot be encoded as JSON ..."]
 ```
+
+Keys are assigned in order and are **never reused or changed** (not by deletes, not by `compact()`).
+Floats keep their type (`2.0` is read back as `2.0`).
 
 ### find()
 
@@ -119,7 +157,17 @@ $results = $db->find("users", ["key" => 0]);
 $results = $db->find("users", ["key" => [0, 1, 2]]);
 ```
 
-**Returns:** Array of records with `key` field added.
+**Matching rules** (shared by `find()`, `update()` and `delete()`):
+
+- Every filter field must exist in the record and be **identical** (`===`): `"25"` does not match `25`,
+  `null` matches only a field that exists with the value `null`, arrays must be equal as a whole.
+- `key` accepts an integer, a digit string (`"5"`) or a list of them; anything else matches nothing.
+  It is combined with the other filters (AND).
+- Any integer (normally `0`), `null` and `[]` select every record. Other non-array filters return `false`.
+
+**Returns:** Array of records with `key` field added (in key order, or in the order of a `key` list).
+Returns `[]` for a database that doesn't exist (`false` if `autoCreateDB` is off); reading never
+creates a database.
 
 ### update()
 
@@ -146,6 +194,10 @@ $result = $db->update("users", [
 ]);
 ```
 
+The first element must be a filter array and `set` a non-`key` array of fields; otherwise
+`["n" => 0, "error" => "Please check your update parameters"]`. An empty `set` changes nothing and
+returns the number of matching records.
+
 ### delete()
 
 Delete matching records.
@@ -158,7 +210,7 @@ $result = $db->delete("users", ["name" => "John"]);
 // By key
 $result = $db->delete("users", ["key" => [0, 2]]);
 
-// All records
+// All records (an empty filter matches everything)
 $result = $db->delete("users", []);
 ```
 
@@ -176,35 +228,44 @@ $query = $db->query("users");
 
 | Method | Description |
 |--------|-------------|
-| `where($filters)` | AND filter with operator support |
-| `orWhere($filters)` | OR filter |
+| `where($filters)` | AND filter with operator support; several calls are all applied (AND) |
+| `orWhere($filters)` | OR group: matches if all `where()` groups match **or** any `orWhere()` group does |
 | `whereIn($field, $values)` | Value in array |
 | `whereNotIn($field, $values)` | Value not in array |
-| `whereNot($filters)` | Not equal |
+| `whereNot($filters)` | Excludes records where **any** of the given fields equals its value (`===`); several calls all apply |
 | `like($field, $pattern)` | Pattern match |
 | `notLike($field, $pattern)` | Pattern not match |
 | `between($field, $min, $max)` | Range (inclusive) |
-| `notBetween($field, $min, $max)` | Outside range |
+| `notBetween($field, $min, $max)` | Not inside the range: also returns records without the field or with a value that can't be compared (e.g. `null`, `true`, text vs numbers) |
 | `search($term, $fields)` | Full-text search |
 
 ### Comparison Operators
 
 ```php
+// Several operators on one field go into one array (a PHP array can't repeat a key)
 $db->query("users")->where([
-    'age' => ['$gt' => 18],      // Greater than
-    'age' => ['$gte' => 18],     // Greater than or equal
-    'age' => ['$lt' => 65],      // Less than
-    'age' => ['$lte' => 65],     // Less than or equal
-    'role' => ['$ne' => 'guest'],// Not equal
-    'role' => ['$eq' => 'admin'],// Equal (explicit)
-    'status' => ['$in' => ['active', 'pending']],   // In array
-    'status' => ['$nin' => ['banned', 'deleted']],  // Not in array
-    'email' => ['$exists' => true],  // Field exists
-    'name' => ['$like' => 'John'],   // Pattern match
-    'email' => ['$regex' => '@gmail.com$'], // Regex
-    'tags' => ['$contains' => 'featured']   // Array/string contains
-]);
+    'age' => ['$gte' => 18, '$lt' => 65],            // Range
+    'role' => ['$ne' => 'guest'],                     // Not equal
+    'status' => ['$in' => ['active', 'pending']],      // In array (strict)
+    'email' => ['$exists' => true],                   // Field exists
+    'name' => ['$like' => '^John'],                   // Pattern (only ^ and $ are special)
+    'tags' => ['$contains' => 'featured']             // Array element / substring
+])->get();
+
+// ...or one where() per condition: all of them apply
+$db->query("users")
+    ->where(['age' => ['$gt' => 18]])
+    ->where(['age' => ['$lte' => 65]])
+    ->where(['email' => ['$regex' => '@gmail\\.com$']])   // regular expression, case-insensitive
+    ->get();
 ```
+
+- `$gt`, `$gte`, `$lt`, `$lte` (and `between()`) compare numbers and numeric strings numerically and
+  other strings lexically. `null`, booleans, arrays, and a number against a non-numeric string never
+  match.
+- `$eq`, `$ne`, `$in`, `$nin` use strict comparison (`===`).
+- An unknown operator (e.g. a typo like `$gtee`), `$in`/`$nin` without an array or an invalid `$regex`
+  throws `InvalidArgumentException`, also when there are no records to check.
 
 ### Modifiers
 
@@ -212,12 +273,12 @@ $db->query("users")->where([
 |--------|-------------|
 | `select($fields)` | Include only specified fields |
 | `except($fields)` | Exclude specified fields |
-| `sort($field, $order)` | Sort results |
+| `sort($field, $order)` | Sort results; further calls add tie-breaking keys |
 | `limit($count)` | Limit results |
 | `offset($count)` | Skip records |
-| `join($db, $localKey, $foreignKey)` | Join databases |
-| `groupBy($field)` | Group results |
-| `having($aggregate, $op, $value)` | Filter groups |
+| `join($db, $localKey, $foreignKey, $alias = null)` | Attach the matching foreign record under `$alias` (default: the foreign database name; it replaces a field of that name in the result only). With duplicate foreign keys the last record wins |
+| `groupBy($field)` | Group results (values keep their type: `1`, `"1"` and `1.5` are different groups) |
+| `having($aggregate, $op, $value)` | Filter groups: `count`, `sum:f`, `avg:f`, `min:f`, `max:f`. Ignored without `groupBy()` or for unknown aggregates/operators |
 
 ### Terminal Methods
 
@@ -233,8 +294,9 @@ $db->query("users")->where([
 | `min($field)` | Minimum value |
 | `max($field)` | Maximum value |
 | `distinct($field)` | Unique values |
-| `update($set)` | Update matches |
-| `delete()` | Delete matches |
+| `update($set)` | Update matches (sort/offset/limit choose which ones) |
+| `delete()` | Delete matches (sort/offset/limit choose which ones) |
+| `removeFields($fields)` | Remove fields from the **stored** matching records |
 
 ---
 
@@ -289,9 +351,12 @@ $info = $db->getShardInfo("users");
 
 ### compact()
 
+Rewrites data files without deleted and superseded records. Keys never change; shards that became
+empty are removed. Usually not needed: compaction also runs automatically.
+
 ```php
 $result = $db->compact("users");
-// ["success" => true, "freedSlots" => 150, ...]
+// ["success" => true, "freedSlots" => 150, "totalRecords" => 44850, "sharded" => true, "newShardCount" => 5]
 ```
 
 ### migrate()
@@ -316,7 +381,8 @@ $db->getShardSize();       // 10000
 
 ```php
 $result = $db->createFieldIndex("users", "email");
-// ["success" => true]
+// ["success" => true, "indexed" => 150, "values" => 120, "error" => null]  (+ "shards" => N when sharded)
+// Calling it again for an indexed field rebuilds the index
 ```
 
 ### hasFieldIndex()
@@ -326,10 +392,22 @@ $exists = $db->hasFieldIndex("users", "email");
 // true/false
 ```
 
+### getFieldIndexes() / rebuildFieldIndex() / getKeysFromFieldIndex()
+
+```php
+$db->getFieldIndexes("users");                       // ["fields" => ["email", "e-mail"], "sharded" => false]
+$db->rebuildFieldIndex("users", "email");            // same result as createFieldIndex()
+$db->getKeysFromFieldIndex("users", "status", "active"); // [0, 4, 7] or null without an index
+```
+
+Field names may contain any characters. Indexes are maintained by every write and give exactly the
+results of a full scan.
+
 ### dropFieldIndex()
 
 ```php
 $result = $db->dropFieldIndex("users", "email");
+// ["success" => true, ...] or ["success" => false, "error" => "Index does not exist"]
 ```
 
 ---
@@ -340,7 +418,8 @@ $result = $db->dropFieldIndex("users", "email");
 
 ```php
 $result = $db->createSpatialIndex("locations", "coords");
-// ["success" => true, "indexed" => 150]
+// ["success" => true, "indexed" => 150, "error" => null]
+// An existing index: ["success" => false, "indexed" => 0, "error" => "Spatial index already exists for field 'coords'"]
 
 // Records with invalid/missing GeoJSON are skipped (not indexed)
 // Always check 'indexed' count to verify
@@ -364,6 +443,7 @@ $indexes = $db->getSpatialIndexes("locations");
 
 ```php
 $result = $db->dropSpatialIndex("locations", "coords");
+// ["success" => true, "error" => null], also when there was no such index (unlike dropFieldIndex())
 ```
 
 ### rebuildSpatialIndex()
@@ -404,7 +484,8 @@ $inside = $db->withinPolygon("locations", "coords", $polygon);
 
 ```php
 $result = $db->validateGeoJSON($geometry);
-// ["valid" => true] or ["valid" => false, "error" => "..."]
+// ["valid" => true, "error" => null, "type" => "Point"]
+// ["valid" => false, "error" => "Longitude must be between -180 and 180", "type" => null]
 ```
 
 ---
@@ -418,10 +499,13 @@ $sorted = $db->sort($results, "name", "asc");
 $sorted = $db->sort($results, "created_at", "desc");
 ```
 
+Stable, total order: missing/`null` < booleans < numbers < strings < arrays (reversed for `desc`).
+Returns `[]` for an empty array and `false` for a non-array.
+
 ### limit()
 
 ```php
-$limited = $db->limit($results, 10);
+$limited = $db->limit($results, 10);   // [] for an empty array, false for invalid arguments
 ```
 
 ### first() / last()
@@ -446,6 +530,9 @@ $results = $db->like("users", "name", "^John");     // Starts with
 $results = $db->like("users", "name", "son$");      // Ends with
 ```
 
+Case-insensitive. Only a leading `^` and a trailing `$` are special; every other character (`.`, `/`,
+`*`, ...) matches itself.
+
 ### between()
 
 ```php
@@ -459,6 +546,21 @@ $results = $db->between("products", "price", 100, 500, ["active" => true]);
 noneDB::clearStaticCache();
 noneDB::disableStaticCache();
 noneDB::enableStaticCache();
+```
+
+### Buffering and indexes
+
+```php
+$db->enableBuffering(true);          // off by default
+$db->setBufferSizeLimit(1048576);    // bytes (min 1KB)
+$db->setBufferCountLimit(10000);     // records (min 10)
+$db->setBufferFlushInterval(30);     // seconds, 0 = no time-based flush
+$db->flush("users");                // ["success" => true, "flushed" => 12, "error" => null]
+$db->flushAllBuffers();             // ["databases" => 2, "flushed" => 40]
+$db->getBufferInfo("users");        // ["enabled" => true, ..., "buffers" => ["main" => ["exists" => true, "size" => 812, "records" => 12]]]
+
+$db->rebuildIndex("users");         // rebuild the key indexes from the data files (recovery tool)
+$db->getIndexInfo("users");         // ["exists" => true, "totalRecords" => 120, "sharded" => false, ...]
 ```
 
 ### Configuration

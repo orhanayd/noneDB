@@ -61,10 +61,10 @@ class ConfigurationTest extends TestCase
         $db = new \noneDB($config);
 
         // Should work without errors
-        $result = $db->insert('config_test', ['name' => 'test']);
+        $result = $db->insert('config-test', ['name' => 'test']);
         $this->assertEquals(1, $result['n']);
 
-        $found = $db->find('config_test', 0);
+        $found = $db->find('config-test', 0);
         $this->assertCount(1, $found);
     }
 
@@ -74,7 +74,7 @@ class ConfigurationTest extends TestCase
     public function programmaticConfigWithAllOptions(): void
     {
         $config = [
-            'secretKey' => 'full_config_test',
+            'secretKey' => 'full-config-test',
             'dbDir' => $this->testDbDir,
             'autoCreateDB' => true,
             'shardingEnabled' => false,
@@ -88,7 +88,7 @@ class ConfigurationTest extends TestCase
         $db = new \noneDB($config);
 
         // Verify it works
-        $result = $db->insert('full_config_test', ['data' => 'test']);
+        $result = $db->insert('full-config-test', ['data' => 'test']);
         $this->assertEquals(1, $result['n']);
     }
 
@@ -143,7 +143,7 @@ class ConfigurationTest extends TestCase
         ];
 
         $db1 = new \noneDB($config1);
-        $db1->insert('cache_test1', ['v' => 1]);
+        $db1->insert('cache-test1', ['v' => 1]);
 
         // Clear cache
         \noneDB::clearConfigCache();
@@ -156,18 +156,22 @@ class ConfigurationTest extends TestCase
         ];
 
         $db2 = new \noneDB($config2);
-        $db2->insert('cache_test2', ['v' => 2]);
+        $db2->insert('cache-test2', ['v' => 2]);
 
         // Both should work independently
-        $this->assertCount(1, $db1->find('cache_test1', 0));
-        $this->assertCount(1, $db2->find('cache_test2', 0));
+        $this->assertCount(1, $db1->find('cache-test1', 0));
+        $this->assertCount(1, $db2->find('cache-test2', 0));
     }
 
     /**
      * @test
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
      */
     public function devModeViaSetDevModeWorks(): void
     {
+        // Separate process: setDevMode() defines a constant that can't be undefined, so it would
+        // switch every later test of the run into dev mode
         // Clear any existing config
         \noneDB::clearConfigCache();
 
@@ -232,7 +236,7 @@ class ConfigurationTest extends TestCase
         $db = new \noneDB($config);
 
         // Should work - relative path gets resolved
-        $result = $db->insert('relative_test', ['data' => 'test']);
+        $result = $db->insert('relative-test', ['data' => 'test']);
         $this->assertEquals(1, $result['n']);
     }
 
@@ -249,7 +253,7 @@ class ConfigurationTest extends TestCase
 
         $db = new \noneDB($config);
 
-        $result = $db->insert('slash_test', ['data' => 'test']);
+        $result = $db->insert('slash-test', ['data' => 'test']);
         $this->assertEquals(1, $result['n']);
     }
 
@@ -266,14 +270,14 @@ class ConfigurationTest extends TestCase
 
         // First instance
         $db1 = new \noneDB($config);
-        $db1->insert('shared_test', ['from' => 'db1']);
+        $db1->insert('shared-test', ['from' => 'db1']);
 
         // Second instance with same config
         $db2 = new \noneDB($config);
-        $db2->insert('shared_test', ['from' => 'db2']);
+        $db2->insert('shared-test', ['from' => 'db2']);
 
         // Both should see all records
-        $all = $db1->find('shared_test', 0);
+        $all = $db1->find('shared-test', 0);
         $this->assertCount(2, $all);
     }
 
@@ -292,7 +296,7 @@ class ConfigurationTest extends TestCase
         $db = new \noneDB($config);
 
         // Should still work - values get cast
-        $result = $db->insert('invalid_config_test', ['data' => 'test']);
+        $result = $db->insert('invalid-config-test', ['data' => 'test']);
         $this->assertEquals(1, $result['n']);
     }
 
@@ -309,7 +313,7 @@ class ConfigurationTest extends TestCase
         $db = new \noneDB($config);
 
         // Should work with defaults for other fields
-        $result = $db->insert('minimal_test', ['data' => 'test']);
+        $result = $db->insert('minimal-test', ['data' => 'test']);
         $this->assertEquals(1, $result['n']);
     }
 
@@ -318,51 +322,39 @@ class ConfigurationTest extends TestCase
      */
     public function emptySecretKeyInConfigStillWorks(): void
     {
-        // Empty string is technically valid (not recommended)
-        $config = [
+        // v3.2.0: an empty secretKey would mean "no key at all", so it is rejected
+        $this->expectException(\InvalidArgumentException::class);
+        new \noneDB([
             'secretKey' => '',
             'dbDir' => $this->testDbDir,
             'autoCreateDB' => true
-        ];
-
-        $db = new \noneDB($config);
-
-        $result = $db->insert('empty_key_test', ['data' => 'test']);
-        $this->assertEquals(1, $result['n']);
+        ]);
     }
 
     /**
      * @test
-     * @runInSeparateProcess
-     * @preserveGlobalState disabled
      */
     public function missingConfigInProductionThrowsException(): void
     {
-        // This test runs in separate process to avoid constant pollution
-
-        // Clear any config
-        \noneDB::clearConfigCache();
-
-        // Make sure dev mode is not enabled
-        // Note: Can't undefine constants, so we check env var behavior
-        putenv('NONEDB_DEV_MODE=0');
-
-        // Try to create instance without config in a non-existent directory
-        // to ensure no config file is found
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessage('Configuration file not found');
-
-        // Change to a temp directory with no config file
-        $originalDir = getcwd();
-        $tempDir = sys_get_temp_dir() . '/nonedb_test_' . uniqid();
+        // Run in a clean child process with a private copy of noneDB.php, so no .nonedb file
+        // (project root, cwd, entry-script dir) and no NONEDB_DEV_MODE constant can be found.
+        $tempDir = sys_get_temp_dir() . '/nonedb_noconfig_' . uniqid();
         mkdir($tempDir);
-        chdir($tempDir);
+        copy(__DIR__ . '/../../noneDB.php', $tempDir . '/noneDB.php');
+        file_put_contents($tempDir . '/run.php', '<?php
+require __DIR__ . "/noneDB.php";
+try { new noneDB(); echo "NO_EXCEPTION"; }
+catch (RuntimeException $e) { echo get_class($e), ":", $e->getMessage(); }');
 
-        try {
-            new \noneDB();
-        } finally {
-            chdir($originalDir);
-            rmdir($tempDir);
-        }
+        $cmd = 'cd ' . escapeshellarg($tempDir) . ' && env -u NONEDB_DEV_MODE '
+            . escapeshellarg(PHP_BINARY) . ' run.php 2>&1';
+        $output = shell_exec($cmd);
+
+        @unlink($tempDir . '/run.php');
+        @unlink($tempDir . '/noneDB.php');
+        @rmdir($tempDir);
+
+        $this->assertStringStartsWith('RuntimeException:', (string)$output);
+        $this->assertStringContainsString('Configuration file not found', (string)$output);
     }
 }

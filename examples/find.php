@@ -5,8 +5,9 @@
  * Demonstrates various ways to query and retrieve data.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'users');
 
 echo "=== noneDB Find Example ===\n\n";
 

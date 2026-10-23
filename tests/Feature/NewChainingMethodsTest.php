@@ -123,9 +123,11 @@ class NewChainingMethodsTest extends noneDBTestCase
             ->orWhere(['city' => 'Ankara'])
             ->get();
 
-        // Without WHERE, all records pass WHERE check (true), OR adds matching records
-        // So this returns all records that match Istanbul OR Ankara OR pass WHERE (all)
-        $this->assertCount(6, $results);
+        // v3.2.0: without where(), only the orWhere() groups decide: Istanbul (3) + Ankara (2)
+        $this->assertCount(5, $results);
+        foreach ($results as $r) {
+            $this->assertContains($r['city'], ['Istanbul', 'Ankara']);
+        }
     }
 
     // ==========================================
@@ -428,15 +430,14 @@ class NewChainingMethodsTest extends noneDBTestCase
      */
     public function whereNotSameFieldOverrides(): void
     {
-        // Note: array_merge with same keys keeps last value
-        // Use whereNotIn for multiple values of same field
+        // v3.2.0: every whereNot() call applies (they used to overwrite each other for the same field)
         $results = $this->noneDB->query($this->testDbName)
             ->whereNot(['city' => 'Istanbul'])
             ->whereNot(['city' => 'Ankara'])
             ->get();
 
-        // Only last whereNot for 'city' is applied (Ankara)
-        $this->assertCount(4, $results); // All except Ankara (2)
+        $this->assertCount(1, $results); // only David (Izmir)
+        $this->assertEquals('Izmir', $results[0]['city']);
     }
 
     // ==========================================
@@ -1408,7 +1409,7 @@ class NewChainingMethodsTest extends noneDBTestCase
     public function joinWithNonExistentForeignDb(): void
     {
         $results = $this->noneDB->query($this->testDbName)
-            ->join('nonexistent_db', 'department', 'id')
+            ->join('nonexistent-db', 'department', 'id')
             ->get();
 
         // Should return records without join data (graceful handling)

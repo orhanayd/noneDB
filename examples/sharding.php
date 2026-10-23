@@ -6,8 +6,9 @@
  * and sharding behavior with large datasets.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'small-db', 'medium-db', 'with-deletions');
 
 echo "=== noneDB Sharding Example ===\n\n";
 
@@ -27,14 +28,14 @@ echo "   (Records per shard before creating a new one)\n";
 echo "\n=== SMALL DATABASE (NOT SHARDED) ===\n\n";
 
 // Create a small database
-$db->insert("small_db", [
+$db->insert("small-db", [
     ["id" => 1, "name" => "Item 1"],
     ["id" => 2, "name" => "Item 2"],
     ["id" => 3, "name" => "Item 3"],
 ]);
 
-$info = $db->getShardInfo("small_db");
-echo "small_db info:\n";
+$info = $db->getShardInfo("small-db");
+echo "small-db info:\n";
 echo "   Sharded: " . ($info['sharded'] ? "true" : "false") . "\n";
 echo "   Total records: " . $info['totalRecords'] . "\n";
 echo "   Shards: " . $info['shards'] . "\n";
@@ -46,7 +47,7 @@ echo "\n=== GET SHARD INFO ===\n\n";
 
 // For non-sharded database
 echo "1. Non-sharded database info:\n";
-$info = $db->getShardInfo("small_db");
+$info = $db->getShardInfo("small-db");
 if ($info) {
     echo "   " . json_encode($info, JSON_PRETTY_PRINT) . "\n";
 }
@@ -66,15 +67,15 @@ $result = $db->migrate("nonexistent");
 echo "   " . json_encode($result) . "\n";
 
 echo "\n2. Migrate small database (will create shards):\n";
-$result = $db->migrate("small_db");
+$result = $db->migrate("small-db");
 echo "   " . json_encode($result) . "\n";
 
 // Check after migration
-$info = $db->getShardInfo("small_db");
+$info = $db->getShardInfo("small-db");
 echo "   After migration - Sharded: " . ($info['sharded'] ? "true" : "false") . "\n";
 
 echo "\n3. Try to migrate again (already sharded):\n";
-$result = $db->migrate("small_db");
+$result = $db->migrate("small-db");
 echo "   " . json_encode($result) . "\n";
 
 // ==========================================
@@ -83,7 +84,7 @@ echo "   " . json_encode($result) . "\n";
 echo "\n=== COMPACT ===\n\n";
 
 // Create database with deletions
-$db->insert("with_deletions", [
+$db->insert("with-deletions", [
     ["id" => 1, "name" => "Keep 1"],
     ["id" => 2, "name" => "Delete me"],
     ["id" => 3, "name" => "Keep 2"],
@@ -92,18 +93,18 @@ $db->insert("with_deletions", [
 ]);
 
 echo "1. Before deletion:\n";
-echo "   Records: " . $db->count("with_deletions") . "\n";
+echo "   Records: " . $db->count("with-deletions") . "\n";
 
 // Delete some records
-$db->delete("with_deletions", ["name" => "Delete me"]);
-$db->delete("with_deletions", ["name" => "Delete me too"]);
+$db->delete("with-deletions", ["name" => "Delete me"]);
+$db->delete("with-deletions", ["name" => "Delete me too"]);
 
-echo "\n2. After deletion (records still show null internally):\n";
-echo "   Visible records: " . $db->count("with_deletions") . "\n";
+echo "\n2. After deletion (deleted records are hidden immediately; their bytes stay in the file until compaction):\n";
+echo "   Visible records: " . $db->count("with-deletions") . "\n";
 
 // Compact to remove null entries
 echo "\n3. After compact:\n";
-$result = $db->compact("with_deletions");
+$result = $db->compact("with-deletions");
 echo "   Result: " . json_encode($result) . "\n";
 echo "   Freed slots: " . $result['freedSlots'] . "\n";
 echo "   Total records: " . $result['totalRecords'] . "\n";
@@ -128,12 +129,12 @@ for ($i = 1; $i <= 500; $i++) {
 }
 
 $start = microtime(true);
-$db->insert("medium_db", $data);
+$db->insert("medium-db", $data);
 $insertTime = round((microtime(true) - $start) * 1000, 2);
 
 echo "   Insert time: " . $insertTime . " ms\n";
 
-$info = $db->getShardInfo("medium_db");
+$info = $db->getShardInfo("medium-db");
 echo "   Sharded: " . ($info['sharded'] ? "true" : "false") . "\n";
 echo "   Total records: " . $info['totalRecords'] . "\n";
 
@@ -146,7 +147,7 @@ echo "Key-based lookups are fast because they only read one shard.\n\n";
 
 // Find by key
 $start = microtime(true);
-$result = $db->find("medium_db", ["key" => 250]);
+$result = $db->find("medium-db", ["key" => 250]);
 $findTime = round((microtime(true) - $start) * 1000, 4);
 
 echo "Find by key 250:\n";
@@ -155,7 +156,7 @@ echo "   Result: " . $result[0]['name'] . "\n";
 
 // Find by multiple keys
 $start = microtime(true);
-$result = $db->find("medium_db", ["key" => [100, 200, 300, 400]]);
+$result = $db->find("medium-db", ["key" => [100, 200, 300, 400]]);
 $findTime = round((microtime(true) - $start) * 1000, 4);
 
 echo "\nFind by keys [100, 200, 300, 400]:\n";

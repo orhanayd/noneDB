@@ -5,8 +5,9 @@
  * Demonstrates the query builder pattern for fluent method chaining.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'users');
 
 echo "=== noneDB Method Chaining Example ===\n\n";
 

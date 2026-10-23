@@ -2,7 +2,7 @@
 
 Comprehensive documentation for noneDB's Query Builder API.
 
-**Version:** 3.1.0
+**Version:** 3.2.0
 
 ---
 
@@ -95,9 +95,23 @@ noneDB supports MongoDB-style comparison operators in `where()` clauses.
 | `$in` | Value in array | `['category' => ['$in' => ['a', 'b']]]` |
 | `$nin` | Value not in array | `['tag' => ['$nin' => ['spam']]]` |
 | `$exists` | Field exists/not exists | `['email' => ['$exists' => true]]` |
-| `$like` | Pattern matching | `['name' => ['$like' => 'John']]` |
-| `$regex` | Regular expression | `['email' => ['$regex' => '@gmail.com$']]` |
-| `$contains` | Array/string contains | `['tags' => ['$contains' => 'featured']]` |
+| `$like` | Pattern matching (literal; only a leading `^` / trailing `$` are special) | `['name' => ['$like' => '^John']]` |
+| `$regex` | Regular expression (case-insensitive, no delimiters) | `['email' => ['$regex' => '@gmail\\.com$']]` |
+| `$contains` | Array element (strict) / substring | `['tags' => ['$contains' => 'featured']]` |
+
+**How values compare**
+
+- `$gt`, `$gte`, `$lt`, `$lte` (and `between()` / `notBetween()`): numbers and numeric strings compare
+  numerically (`"30" > 18`), other strings lexically (`'2024-02-01' > '2024-01-15'`). `null`, booleans,
+  arrays and a number against a non-numeric string never match. A missing field never matches.
+- `$eq`, `$ne`, `$in`, `$nin`, `whereIn()`, `whereNot()` and plain `['field' => value]` filters use strict
+  comparison (`===`): `'25'` is not `25`.
+- A filter value that is an array of operators applies all of them; any other array is compared as a
+  whole (`['addr' => ['city' => 'Ist']]` matches only that exact array).
+- A mix of operators and plain keys in one value throws `InvalidArgumentException` as soon as `where()`
+  / `orWhere()` is called. An unknown operator (`$gtee`), `$in`/`$nin` without an array or an invalid
+  `$regex` throws it when the query runs, also on an empty database (filters are compiled once per
+  query, before records are read).
 
 ### Comparison Examples
 
@@ -194,9 +208,9 @@ $featuredProducts = $db->query("products")
     ->where(['tags' => ['$contains' => 'featured']])
     ->get();
 
-// Check if string field contains substring
+// Check if string field contains substring (case-sensitive; use $like for case-insensitive matching)
 $techNews = $db->query("articles")
-    ->where(['title' => ['$contains' => 'technology']])
+    ->where(['title' => ['$contains' => 'Technology']])
     ->get();
 ```
 
@@ -228,7 +242,12 @@ $activeAdmins = $db->query("users")
 
 ### where()
 
-Primary filter method. Applies AND logic across all conditions.
+Primary filter method. Applies AND logic across all conditions. Each `where()` call adds another group
+that must also match, so conditions on the same field can be split over several calls:
+
+```php
+$db->query("users")->where(['age' => ['$gte' => 18]])->where(['age' => ['$lt' => 65]]);
+```
 
 ```php
 // Simple equality
@@ -243,7 +262,8 @@ $db->query("users")->where([
 
 ### orWhere()
 
-Adds OR conditions to the query.
+Adds OR groups: a record matches if **all** `where()` groups match **or any** `orWhere()` group matches.
+Without `where()`, only the `orWhere()` groups decide.
 
 ```php
 // Users who are admins OR have high reputation
@@ -278,7 +298,8 @@ $db->query("products")
 
 ### whereNot()
 
-Exclude records matching conditions.
+Exclude records where **any** of the given fields equals its value (`===`):
+`whereNot(['role' => 'guest', 'dept' => 'hr'])` drops guests and everyone in HR. Several calls all apply.
 
 ```php
 // All users except guests
@@ -298,8 +319,11 @@ $db->query("users")->like('name', '^A')->get();
 // Names ending with 'son'
 $db->query("users")->like('name', 'son$')->get();
 
-// Names containing 'john' (case-insensitive)
+// Names containing 'john' (case-insensitive, UTF-8 aware)
 $db->query("users")->like('name', 'john')->get();
+
+// Everything except a leading ^ and a trailing $ is literal: this matches 'http://...' only
+$db->query("links")->like('url', '^http://')->get();
 
 // Exclude spam titles
 $db->query("posts")->notLike('title', 'SPAM')->get();
@@ -321,6 +345,10 @@ $db->query("users")
     ->get();
 ```
 
+`between()` matches only comparable values inside the range (see the comparison rules above).
+`notBetween()` returns every other record, including records without the field or with a value that
+can't be compared (`null`, booleans, text against numbers).
+
 ### search()
 
 Full-text search across fields.
@@ -336,6 +364,9 @@ $db->query("articles")
     ->search('php tutorial', ['title', 'content', 'tags'])
     ->get();
 ```
+
+Case-insensitive substring match on scalar values (`İzmir`, `IZMIR` and `izmir` match each other).
+Without a field list, every field except `key` is searched.
 
 ---
 
@@ -353,13 +384,19 @@ $db->query("users")->sort('name', 'asc')->get();
 // Descending
 $db->query("products")->sort('price', 'desc')->get();
 
-// Sort by distance (spatial queries)
+// Several keys: category first, then price
+$db->query("products")->sort('category')->sort('price', 'desc')->get();
+
+// Sort by distance (spatial queries; distances are in meters)
 $db->query("locations")
-    ->withinDistance('coords', $lon, $lat, 10)
+    ->withinDistance('coords', $lon, $lat, 10000)
     ->withDistance('coords', $lon, $lat)
     ->sort('_distance', 'asc')
     ->get();
 ```
+
+Sorting is stable and uses a total order: missing/`null` first, then booleans, numbers, strings and
+arrays (reversed for `desc`).
 
 ### limit() / offset()
 
@@ -431,18 +468,25 @@ $ordersWithUsers = $db->query("orders")
     ->join("users", "user_id", "key")  // orders.user_id = users.key
     ->get();
 
-// Result includes user data in _joined field
+// The matching user record is attached under the foreign database's name (or null if none matches)
 foreach ($ordersWithUsers as $order) {
-    echo $order['_joined']['name'];  // User's name
+    echo $order['users']['name'] ?? '-';  // User's name
 }
+
+// Custom field name (alias)
+$db->query("orders")->join("users", "user_id", "key", "buyer")->get(); // $order['buyer']
 ```
+
+- The attached record replaces a field of the same name in the result only; stored records are never changed.
+- If several foreign records have the same `$foreignKey` value, the last one wins.
+- Joining a database that doesn't exist attaches `null` and creates nothing.
 
 ### Multiple Joins
 
 ```php
 $data = $db->query("order_items")
-    ->join("orders", "order_id", "key")
-    ->join("products", "product_id", "key")
+    ->join("orders", "order_id", "key")      // $item['orders']
+    ->join("products", "product_id", "key")  // $item['products']
     ->get();
 ```
 
@@ -460,12 +504,16 @@ $ordersByStatus = $db->query("orders")
     ->groupBy('status')
     ->get();
 
-// Returns: [
-//   'pending' => [...orders],
-//   'completed' => [...orders],
-//   'cancelled' => [...orders]
+// Returns a list of groups:
+// [
+//   ['_group' => 'pending',   '_items' => [...orders], '_count' => 12],
+//   ['_group' => 'completed', '_items' => [...orders], '_count' => 40],
+//   ...
 // ]
 ```
+
+Group values keep their type (`1`, `"1"` and `1.5` are separate groups); records without the field
+are grouped under `null`.
 
 ### having()
 
@@ -481,9 +529,13 @@ $frequentCustomers = $db->query("orders")
 // Categories with average rating >= 4
 $goodCategories = $db->query("products")
     ->groupBy('category')
-    ->having('avg', '>=', 4, 'rating')
+    ->having('avg:rating', '>=', 4)
     ->get();
 ```
+
+Aggregates: `count`, `sum:field`, `avg:field`, `min:field`, `max:field`; operators: `>`, `<`, `>=`, `<=`,
+`=`, `!=`. `having()` only applies to groups: without `groupBy()`, or with an unknown aggregate or
+operator, the condition is ignored.
 
 ---
 
@@ -494,7 +546,7 @@ noneDB supports geospatial queries with R-tree indexing.
 ### Creating Spatial Index
 
 ```php
-// Create index on location field (required before spatial queries)
+// Create index on location field (optional: spatial queries work without it, the index makes them fast)
 $db->createSpatialIndex("restaurants", "location");
 
 // Check if index exists
@@ -548,19 +600,20 @@ Find records within radius of a point.
 $nearby = $db->withinDistance("restaurants", "location",
     28.9784,  // longitude
     41.0082,  // latitude
-    5         // radius in km
+    5000      // radius in meters
 );
 
 // Query builder
 $nearby = $db->query("restaurants")
-    ->withinDistance('location', 28.9784, 41.0082, 5)
+    ->withinDistance('location', 28.9784, 41.0082, 5000)   // 5 km
     ->where(['open_now' => true])
     ->get();
 ```
 
 ### withinBBox()
 
-Find records within bounding box.
+Find records whose geometry's bounding box overlaps the box (a point inside it, or a line/polygon that
+reaches into or touches it).
 
 ```php
 // Direct method
@@ -587,7 +640,7 @@ $closest = $db->nearest("restaurants", "location",
     5                   // number of results
 );
 
-// Query builder with distance
+// Query builder: the 10 nearest records among those rated 4+ (k is applied after the other filters)
 $closest = $db->query("restaurants")
     ->nearest('location', 28.9784, 41.0082, 10)
     ->where(['rating' => ['$gte' => 4.0]])
@@ -625,17 +678,22 @@ $inPolygon = $db->query("restaurants")
 
 ### withDistance()
 
-Add calculated distance to results.
+Add `_distance` to every result: meters from the point to the geometry, measured like
+`withinDistance()` / `nearest()` (0 for a point inside a polygon, otherwise to the geometry's nearest
+point), rounded to 4 decimals. It is computed before sorting and kept by `select()`.
+
+In the query builder, `withinDistance()` and `nearest()` already add `_distance` (to their own center,
+rounded to 2 decimals); `withDistance()` replaces it with the distance to its point.
 
 ```php
 $results = $db->query("restaurants")
-    ->withinDistance('location', $userLon, $userLat, 10)
+    ->withinDistance('location', $userLon, $userLat, 10000)   // 10 km
     ->withDistance('location', $userLon, $userLat)
     ->sort('_distance', 'asc')
     ->get();
 
 foreach ($results as $r) {
-    echo "{$r['name']}: {$r['_distance']} km away\n";
+    echo "{$r['name']}: {$r['_distance']} m away\n";
 }
 ```
 
@@ -644,7 +702,7 @@ foreach ($results as $r) {
 ```php
 // Food delivery app: find nearby open restaurants with delivery
 $restaurants = $db->query("restaurants")
-    ->withinDistance('location', $userLon, $userLat, 5)
+    ->withinDistance('location', $userLon, $userLat, 5000)
     ->where([
         'open_now' => true,
         'delivery' => true,
@@ -704,8 +762,12 @@ Updates matching records and returns result.
 $result = $db->query("users")
     ->where(['status' => 'inactive'])
     ->update(['status' => 'archived']);
-// Returns: ['n' => 5, 'keys' => [1, 3, 7, 12, 15]]
+// Returns: ['n' => 5]
 ```
+
+`sort()`, `offset()` and `limit()` choose which records are written (e.g. "the 10 oldest"); `select()`,
+`except()` and `join()` don't matter. Selecting and writing happen under one database lock.
+`update()`/`delete()` can't be combined with `groupBy()` (`LogicException`).
 
 ### delete()
 
@@ -715,7 +777,17 @@ Deletes matching records and returns result.
 $result = $db->query("logs")
     ->where(['created_at' => ['$lt' => strtotime('-30 days')]])
     ->delete();
-// Returns: ['n' => 100, 'keys' => [...]]
+// Returns: ['n' => 100]
+```
+
+### removeFields()
+
+Removes fields from the **stored** matching records (never affected by `select()`, `except()`,
+`join()` or `withDistance()`).
+
+```php
+$db->query("users")->where(['legacy' => true])->removeFields(['old_password', 'tmp']);
+// Returns: ['n' => 12, 'fields_removed' => ['old_password']]
 ```
 
 ---
@@ -775,7 +847,7 @@ foreach ($db->query("orders")->where(['status' => 'completed'])->get() as $order
 ```php
 // Find nearby services with filters
 $services = $db->query("services")
-    ->withinDistance('location', $userLon, $userLat, 10)
+    ->withinDistance('location', $userLon, $userLat, 10000)
     ->where([
         'available' => true,
         'rating' => ['$gte' => 4.0],
@@ -859,11 +931,11 @@ $db->query("orders")
 ### 5. Use Spatial Indexes for Location Queries
 
 ```php
-// Always create spatial index before queries
+// Create the spatial index once
 $db->createSpatialIndex("restaurants", "location");
 
-// Then queries are O(log n) instead of O(n)
-$db->withinDistance("restaurants", "location", $lon, $lat, 5);
+// Then queries use the R-tree instead of scanning every record
+$db->withinDistance("restaurants", "location", $lon, $lat, 5000); // 5 km (meters)
 ```
 
 ### 6. Batch Operations
@@ -902,7 +974,7 @@ $db->query("orders")
 ### Spatial Methods
 
 ```php
-->withinDistance($field, $lon, $lat, $km)
+->withinDistance($field, $lon, $lat, $meters)
 ->withinBBox($field, $minLon, $minLat, $maxLon, $maxLat)
 ->nearest($field, $lon, $lat, $k)
 ->withinPolygon($field, $polygon)
@@ -958,6 +1030,7 @@ $db->query("orders")
 
 | Version | Changes |
 |---------|---------|
+| 3.2.0 | `where()` calls combine with AND; `orWhere()` without `where()` fixed; type-aware comparisons; unknown operators throw; safe `like`/`$regex`; multi-key stable `sort()`; `nearest()` applies k after filters; `withDistance()` before sort and measured like `withinDistance()`; typed `groupBy()`; `removeFields()` on stored records only |
 | 3.1.0 | Added comparison operators ($gt, $gte, $lt, $lte, $ne, $eq, $in, $nin, $exists, $like, $regex, $contains) |
 | 3.1.0 | Added spatial indexing with R-tree (withinDistance, withinBBox, nearest, withinPolygon) |
 | 3.1.0 | Added withDistance() for distance calculations |

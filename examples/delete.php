@@ -5,8 +5,9 @@
  * Demonstrates various ways to delete records.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'users', 'logs', 'session', 'temp');
 
 echo "=== noneDB Delete Example ===\n\n";
 
@@ -120,10 +121,9 @@ echo "   Sessions after: " . $db->count("session") . "\n";
 // 7. Deleted Records Become NULL
 // -----------------------------------------
 echo "\n7. Technical Note - Deleted Records:\n";
-echo "   - Deleted records become NULL internally\n";
-echo "   - They are filtered from find() results\n";
-echo "   - Use compact() to reclaim space\n";
-echo "   - Keys may be reassigned after compact()\n";
+echo "   - Deleted records disappear from find() immediately\n";
+echo "   - Their bytes stay in the file until compaction (automatic, or compact())\n";
+echo "   - Keys never change, also not after compact(); deleted keys are never reused\n";
 
 // -----------------------------------------
 // 8. Using compact() After Deletes

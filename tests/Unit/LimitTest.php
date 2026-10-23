@@ -101,9 +101,8 @@ class LimitTest extends noneDBTestCase
      */
     public function emptyArrayReturnsFalse(): void
     {
-        $result = $this->noneDB->limit([], 3);
-
-        $this->assertFalse($result, 'Empty array should return false');
+        // v3.2.0: an empty result set limited is still an empty result set (it used to be false)
+        $this->assertSame([], $this->noneDB->limit([], 3));
     }
 
     /**

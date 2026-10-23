@@ -54,39 +54,39 @@ foreach ($recordCounts as $count) {
 
     // 1. Batch Insert (without spatial index)
     $start = microtime(true);
-    $db->insert('benchmark_locations', $data);
+    $db->insert('benchmark-locations', $data);
     $insertTime = (microtime(true) - $start) * 1000;
     echo "Insert $count records: " . round($insertTime, 2) . " ms\n";
 
     // 2. Create Spatial Index
     $start = microtime(true);
-    $db->createSpatialIndex('benchmark_locations', 'location');
+    $db->createSpatialIndex('benchmark-locations', 'location');
     $indexTime = (microtime(true) - $start) * 1000;
     echo "Create spatial index: " . round($indexTime, 2) . " ms\n";
 
     // 3. withinDistance query
     $start = microtime(true);
-    $results = $db->withinDistance('benchmark_locations', 'location', 28.9, 41.0, 5000);
+    $results = $db->withinDistance('benchmark-locations', 'location', 28.9, 41.0, 5000);
     $queryTime = (microtime(true) - $start) * 1000;
     echo "withinDistance (5km): " . round($queryTime, 2) . " ms (" . count($results) . " results)\n";
 
     // 4. nearest() query
     $start = microtime(true);
-    $results = $db->nearest('benchmark_locations', 'location', 28.9, 41.0, 10);
+    $results = $db->nearest('benchmark-locations', 'location', 28.9, 41.0, 10);
     $nearestTime = (microtime(true) - $start) * 1000;
     echo "nearest(10): " . round($nearestTime, 2) . " ms\n";
 
     // 5. withinBBox query
     $start = microtime(true);
-    $results = $db->withinBBox('benchmark_locations', 'location', 28.85, 40.95, 28.95, 41.05);
+    $results = $db->withinBBox('benchmark-locations', 'location', 28.85, 40.95, 28.95, 41.05);
     $bboxTime = (microtime(true) - $start) * 1000;
     echo "withinBBox: " . round($bboxTime, 2) . " ms (" . count($results) . " results)\n";
 
     // 6. Query Builder with spatial + where filter
     $start = microtime(true);
-    $results = $db->query('benchmark_locations')
+    $results = $db->query('benchmark-locations')
         ->withinDistance('location', 28.9, 41.0, 10000)
-        ->where(['name' => ['$like' => 'Location 1%']])
+        ->where(['name' => ['$like' => '^Location 1']]) // names starting with "Location 1" ($like is literal except ^ and $)
         ->get();
     $combinedTime = (microtime(true) - $start) * 1000;
     echo "Combined query (spatial+where): " . round($combinedTime, 2) . " ms (" . count($results) . " results)\n";

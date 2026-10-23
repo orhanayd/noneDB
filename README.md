@@ -1,10 +1,10 @@
 # noneDB
 
-[![Version](https://img.shields.io/badge/version-3.1.0-orange.svg)](CHANGES.md)
+[![Version](https://img.shields.io/badge/version-3.2.0-orange.svg)](CHANGES.md)
 [![PHP Version](https://img.shields.io/badge/PHP-7.4%2B-blue.svg)](https://php.net)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-970%20passed-brightgreen.svg)](tests/)
-[![Thread Safe](https://img.shields.io/badge/thread--safe-atomic%20locking-success.svg)](#concurrent-access)
+[![Tests](https://img.shields.io/badge/tests-1084%20passed-brightgreen.svg)](tests/)
+[![Concurrency](https://img.shields.io/badge/multi--process-safe-success.svg)](#concurrent-access)
 
 **noneDB** is a lightweight, file-based NoSQL database for PHP. No installation required - just include and go!
 
@@ -15,13 +15,13 @@
 - **O(1) key lookups** - JSONL storage with byte-offset indexing
 - **Spatial indexing** - R-tree for geospatial queries (v3.1)
 - **MongoDB-style operators** - `$gt`, `$gte`, `$lt`, `$lte`, `$ne`, `$in`, `$nin`, `$exists`, `$like`, `$regex`, `$contains` (v3.1)
-- **Auto-sharding** for large datasets (500K+ tested)
-- **Thread-safe** - atomic file locking for concurrent access
+- **Auto-sharding** for large datasets
+- **Multi-process safe** - database-level locking, crash-safe writes, self-healing indexes
 - **Method chaining** - fluent query builder interface
 
 ## Requirements
 
-- PHP 7.4 or higher
+- PHP 7.4 or higher (tested on 7.4 up to 8.5)
 - Write permission on database directory
 
 ## Installation
@@ -76,7 +76,7 @@ $db->delete("users", ["name" => "John"]);
 
 ## Configuration
 
-Create a `.nonedb` file in your project root:
+Create a `.nonedb` file in your project root (outside the web root):
 
 ```json
 {
@@ -86,11 +86,18 @@ Create a `.nonedb` file in your project root:
 }
 ```
 
+- `secretKey` must be a non-empty string and not one of the example placeholders (32+ random characters
+  recommended: `php -r "echo bin2hex(random_bytes(32));"`). It makes database **file names**
+  unguessable; it does **not** encrypt the data — keep `dbDir` out of the web root.
+- A relative `dbDir` (`./db/` or `db/`) is resolved against the `.nonedb` file's directory, so web pages
+  and CLI/cron scripts use the same databases.
+- To change the key of existing databases use `noneDB::migrateKey($dbDir, $oldKey, $newKey)`.
+
 **Or programmatically:**
 
 ```php
 $db = new noneDB([
-    'secretKey' => 'your_secure_key',
+    'secretKey' => getenv('NONEDB_SECRET'), // your own random key (example placeholders are rejected)
     'dbDir' => '/path/to/db/'
 ]);
 ```
@@ -103,6 +110,11 @@ $db = new noneDB();
 ```
 
 > See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for all options.
+
+### Database names
+
+Names may contain `A-Z a-z 0-9`, space, apostrophe (`'`) and hyphen (`-`). Anything else throws
+`InvalidArgumentException` (names are never silently changed). `"0"` is a valid name.
 
 ---
 
@@ -195,13 +207,15 @@ $inArea = $db->withinBBox("restaurants", "location", 28.97, 41.00, 29.00, 41.03)
 
 | Operation | 10K Records | 100K Records |
 |-----------|-------------|--------------|
-| find(key) | **0.03 ms** | **0.05 ms** |
-| find(filter) | 50 ms | 520 ms |
-| insert (batch) | 290 ms | 3.1 s |
+| find(key) | **0.05 ms** | **0.06 ms** |
+| find(key), first lookup of a process | 3 ms | 4 ms |
+| find(filter) | 32 ms | 336 ms |
+| insert (batch) | 121 ms | 1.3 s |
+| update (filter, 20% of records) | 40 ms | 455 ms |
 | count() | **< 1 ms** | **< 1 ms** |
-| withinDistance | 10-20 ms | 50-100 ms |
 
-> Benchmarks on Apple Silicon. Key lookups are O(1) with byte-offset indexing.
+> PHP 8.2 on an Apple M2, including the per-operation database lock. Key lookups are O(1) with
+> byte-offset indexing. Details, 3.1 comparison and SleekDB comparison: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ---
 
@@ -222,11 +236,28 @@ vendor/bin/phpunit --testsuite Feature
 
 ## Concurrent Access
 
-noneDB uses atomic file locking (`flock()`) for thread-safe operations:
+Each operation locks its database (`flock()` on `{db}.nonedb.lock`): shared for reads, exclusive for
+writes, across processes and instances.
 
-- **No lost updates** - concurrent writes are serialized
-- **Read consistency** - reads wait for ongoing writes
-- **Crash safety** - locks auto-release on process termination
+- **No lost updates** - concurrent inserts/updates/deletes are serialized; keys are never reused
+- **Fresh caches** - a generation counter invalidates cached indexes when another process writes
+- **Crash safety** - files are replaced atomically; a writer killed mid-operation leaves nothing
+  half-written: key, field and spatial indexes are repaired from the data on the next access
+- **Lock timeout** - waiting longer than `lockTimeout` seconds throws `RuntimeException`
+
+The lock file also holds a small state record (change counter, pending buffer, index journal), so these
+checks cost no extra file access. Don't delete `*.nonedb.lock` files while processes use the databases.
+
+This is verified by multi-process stress tests and real `SIGKILL` crash tests in `tests/Regression`.
+
+---
+
+## Upgrading from 3.1
+
+Read the [v3.2.0 upgrade notes](CHANGES.md#upgrade-notes-read-before-upgrading): secretKey and
+database names are validated, a relative `dbDir` follows the `.nonedb` file, buffering is off by default
+and `compact()` no longer renumbers keys. Don't run 3.1 and 3.2 on the same database directory at the
+same time.
 
 ---
 

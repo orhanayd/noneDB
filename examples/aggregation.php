@@ -5,8 +5,9 @@
  * Demonstrates count(), sum(), avg(), min(), and max() methods.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'employees', 'orders');
 
 echo "=== noneDB Aggregation Methods Example ===\n\n";
 

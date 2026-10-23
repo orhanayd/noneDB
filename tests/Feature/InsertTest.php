@@ -175,8 +175,10 @@ class InsertTest extends noneDBTestCase
     {
         $result = $this->noneDB->insert($this->testDbName, []);
 
-        // Empty array is not multidimensional, so treated as single empty record
-        $this->assertEquals(1, $result['n']);
+        // v3.2.0: an empty insert is rejected instead of storing an empty record
+        $this->assertEquals(0, $result['n']);
+        $this->assertArrayHasKey('error', $result);
+        $this->assertSame([], $this->noneDB->find($this->testDbName, 0));
     }
 
     /**
@@ -184,10 +186,14 @@ class InsertTest extends noneDBTestCase
      */
     public function insertWithSpecialCharsInDBName(): void
     {
-        $result = $this->noneDB->insert('test<>db', ['data' => 'test']);
-
-        $this->assertEquals(1, $result['n']);
-        $this->assertDatabaseExists('testdb');
+        // v3.2.0: invalid names are rejected, nothing is written
+        try {
+            $this->noneDB->insert('test<>db', ['data' => 'test']);
+            $this->fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('invalid database name', $e->getMessage());
+        }
+        $this->assertDatabaseNotExists('testdb');
     }
 
     /**

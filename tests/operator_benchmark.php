@@ -247,9 +247,9 @@ foreach ($recordCounts as $count) {
     echo "\n";
 }
 
-// Cleanup
-foreach (glob($testDir . '*') as $file) {
-    if (is_file($file)) unlink($file);
+// Cleanup (including dot files such as .htaccess and the hash cache)
+foreach (array_diff(scandir($testDir) ?: [], ['.', '..']) as $file) {
+    if (is_file($testDir . $file)) unlink($testDir . $file);
 }
 rmdir($testDir);
 

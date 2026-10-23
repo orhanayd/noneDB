@@ -5,8 +5,9 @@
  * Demonstrates distinct(), like(), and between() methods.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'users');
 
 echo "=== noneDB Query Methods Example ===\n\n";
 

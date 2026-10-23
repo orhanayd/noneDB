@@ -696,7 +696,7 @@ class QueryDocumentationTest extends noneDBTestCase
     public function testEcommerceSearchPattern(): void
     {
         // Setup product data
-        $productDb = $this->testDbName . '_products';
+        $productDb = $this->testDbName . '-products';
         $this->noneDB->insert($productDb, [
             ['name' => 'Laptop', 'category' => 'electronics', 'price' => 999, 'stock' => 10, 'rating' => 4.5, 'status' => 'active'],
             ['name' => 'Phone', 'category' => 'electronics', 'price' => 599, 'stock' => 25, 'rating' => 4.2, 'status' => 'active'],
@@ -735,7 +735,7 @@ class QueryDocumentationTest extends noneDBTestCase
     public function testUserAuthenticationPattern(): void
     {
         // Setup
-        $authDb = $this->testDbName . '_auth';
+        $authDb = $this->testDbName . '-auth';
         $passwordHash = password_hash('secret123', PASSWORD_DEFAULT);
 
         $this->noneDB->insert($authDb, [
@@ -776,7 +776,7 @@ class QueryDocumentationTest extends noneDBTestCase
      */
     public function testContentManagementPattern(): void
     {
-        $articleDb = $this->testDbName . '_articles';
+        $articleDb = $this->testDbName . '-articles';
 
         $this->noneDB->insert($articleDb, [
             ['title' => 'PHP Tutorial', 'status' => 'published', 'published_at' => time() - 3600, 'tags' => ['php', 'tutorial', 'featured'], 'category' => 'tech'],

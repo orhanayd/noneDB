@@ -26,7 +26,7 @@ abstract class noneDBTestCase extends TestCase
     /**
      * @var string Test database name
      */
-    protected $testDbName = 'phpunit_test_db';
+    protected $testDbName = 'phpunit-test-db';
 
     /**
      * Set up test environment before each test
@@ -109,7 +109,9 @@ abstract class noneDBTestCase extends TestCase
     {
         $reflector = new ReflectionClass(\noneDB::class);
         $method = $reflector->getMethod($methodName);
-        $method->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) {
+            $method->setAccessible(true); // no effect since 8.1, deprecated in 8.5
+        }
 
         return $method;
     }
@@ -124,7 +126,9 @@ abstract class noneDBTestCase extends TestCase
     {
         $reflector = new ReflectionClass(\noneDB::class);
         $property = $reflector->getProperty($propertyName);
-        $property->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true); // no effect since 8.1, deprecated in 8.5
+        }
 
         return $property->getValue($this->noneDB);
     }
@@ -139,7 +143,9 @@ abstract class noneDBTestCase extends TestCase
     {
         $reflector = new ReflectionClass(\noneDB::class);
         $property = $reflector->getProperty($propertyName);
-        $property->setAccessible(true);
+        if (PHP_VERSION_ID < 80100) {
+            $property->setAccessible(true); // no effect since 8.1, deprecated in 8.5
+        }
         $property->setValue($this->noneDB, $value);
     }
 

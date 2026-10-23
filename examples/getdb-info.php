@@ -5,8 +5,9 @@
  * Demonstrates getDBs() method for listing databases and getting info.
  */
 
-include("../noneDB.php");
-$db = new noneDB();
+require __DIR__ . '/_bootstrap.php';
+$db = exampleDb();
+freshDatabases($db, 'users', 'logs', 'products');
 
 echo "=== noneDB Database Information Example ===\n\n";
 

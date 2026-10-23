@@ -552,7 +552,7 @@ class ShardingTest extends noneDBTestCase
      */
     public function migrateNonExistentDatabaseReturnsFalse(): void
     {
-        $result = $this->noneDB->migrate('nonexistent_db');
+        $result = $this->noneDB->migrate('nonexistent-db');
         $this->assertFalse($result['success']);
         $this->assertEquals('database_not_found', $result['status']);
     }
@@ -599,7 +599,7 @@ class ShardingTest extends noneDBTestCase
      */
     public function compactOnNonExistentDatabaseReturnsFalse(): void
     {
-        $result = $this->noneDB->compact('nonexistent_db');
+        $result = $this->noneDB->compact('nonexistent-db');
         $this->assertFalse($result['success']);
         $this->assertEquals('database_not_found', $result['status']);
     }

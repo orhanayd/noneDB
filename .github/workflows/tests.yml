@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php-version: ['7.4', '8.0', '8.1', '8.2', '8.3']
+        php-version: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
 
     steps:
       - name: Checkout code
@@ -39,18 +39,24 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: ${{ runner.os }}-composer-
+          # composer.lock is not committed, so the cache follows composer.json
+          key: ${{ runner.os }}-php${{ matrix.php-version }}-composer-${{ hashFiles('composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php-version }}-composer-
 
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress --no-interaction
 
-      - name: Create test database directory
-        run: mkdir -p db
-
-      - name: Run PHPUnit tests
+      - name: Run PHPUnit tests (Unit, Feature, Integration, Regression)
         run: vendor/bin/phpunit --testdox --colors=always
+
+      - name: Run the examples (each must finish without warnings)
+        run: |
+          for f in examples/*.php; do
+            case "$f" in examples/_bootstrap.php|examples/performance.php) continue;; esac
+            out=$(php -d error_reporting=E_ALL -d display_errors=1 "$f" 2>&1) || { echo "$out"; exit 1; }
+            if echo "$out" | grep -qiE "warning|notice|deprecated|fatal|uncaught"; then echo "$f:"; echo "$out"; exit 1; fi
+          done
 
       - name: Cleanup test databases
         if: always()
-        run: rm -rf db/*.json
+        run: rm -rf tests/test_db examples/db

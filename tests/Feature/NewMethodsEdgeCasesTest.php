@@ -705,15 +705,15 @@ class NewMethodsEdgeCasesTest extends noneDBTestCase
      */
     public function joinWithEmptyForeignDb(): void
     {
-        $this->noneDB->createDB('empty_departments');
+        $this->noneDB->createDB('empty-departments');
 
         $results = $this->noneDB->query($this->testDbName)
-            ->join('empty_departments', 'department', 'id')
+            ->join('empty-departments', 'department', 'id')
             ->get();
 
         // All joins should be null
         foreach ($results as $record) {
-            $this->assertNull($record['empty_departments']);
+            $this->assertNull($record['empty-departments']);
         }
     }
 
@@ -914,7 +914,7 @@ class NewMethodsEdgeCasesTest extends noneDBTestCase
         // Clean up additional test databases
         $dbDir = $this->getPrivateProperty('dbDir');
         $hashMethod = $this->getPrivateMethod('hashDBName');
-        foreach (['departments', 'empty_departments', 'emptydb'] as $db) {
+        foreach (['departments', 'empty-departments', 'emptydb'] as $db) {
             $hash = $hashMethod->invoke($this->noneDB, $db);
             $files = glob($dbDir . $hash . '-' . $db . '*');
             foreach ($files as $file) {

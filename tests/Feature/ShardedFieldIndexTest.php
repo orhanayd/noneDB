@@ -44,7 +44,7 @@ class ShardedFieldIndexTest extends noneDBTestCase
     private function getGlobalIndexPath($field)
     {
         // Must use sanitized dbname (createFieldIndex sanitizes the name)
-        $sanitizedName = $this->invokePrivateMethod('sanitizeDbName', [$this->testDbName]);
+        $sanitizedName = $this->invokePrivateMethod('normalizeDbName', [$this->testDbName]);
         $hash = $this->invokePrivateMethod('hashDBName', [$sanitizedName]);
         return $this->testDbDir . $hash . "-" . $sanitizedName . ".nonedb.gfidx." . $field;
     }
@@ -80,7 +80,7 @@ class ShardedFieldIndexTest extends noneDBTestCase
         $content = file_get_contents($gfidxPath);
         $globalMeta = json_decode($content, true);
 
-        $this->assertEquals(1, $globalMeta['v']);
+        $this->assertEquals(2, $globalMeta['v']); // v2 since 3.2.0 (v1 files may be incomplete and are rebuilt)
         $this->assertEquals('city', $globalMeta['field']);
         $this->assertArrayHasKey('shardMap', $globalMeta);
 

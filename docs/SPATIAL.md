@@ -2,7 +2,7 @@
 
 Comprehensive documentation for noneDB's geospatial capabilities using R-tree indexing.
 
-**Version:** 3.1.0
+**Version:** 3.2.0
 
 ---
 
@@ -258,6 +258,10 @@ foreach ($nearby as $r) {
 }
 ```
 
+Distance is measured to the **nearest point of the geometry**: 0 for a point inside a polygon, the
+closest vertex or edge otherwise (a Point is just that point). Results are sorted by distance.
+Circles that cross the antimeridian (±180°) or reach a pole are searched correctly.
+
 ### withinBBox()
 
 Find records within a bounding box.
@@ -269,7 +273,12 @@ $inArea = $db->withinBBox(
     28.97, 41.00,  // minLon, minLat (SW corner)
     29.00, 41.03   // maxLon, maxLat (NE corner)
 );
+
+// A box crossing the antimeridian: minLon > maxLon
+$pacific = $db->withinBBox("ships", "location", 170, -10, -170, 10);
 ```
+
+Returns geometries whose bounding box overlaps the box.
 
 ### nearest()
 
@@ -292,10 +301,16 @@ echo "Nearest: " . $closest[0]['name'];
 
 ```php
 $closest = $db->nearest("restaurants", "location", 28.9784, 41.0082, 5, [
-    'includeDistance' => true,
-    'maxDistance' => 10000  // Maximum distance in meters (10km)
+    'includeDistance' => false, // default true for nearest(): each result has _distance in meters
+    'maxDistance' => 10000      // Maximum distance in meters (10km)
 ]);
 ```
+
+`nearest()` adds `_distance` unless `'includeDistance' => false`; `withinDistance()` adds it only with
+`'includeDistance' => true`.
+
+With `maxDistance`, the records within that distance are returned even when there are fewer than k.
+`k = 0` returns `[]`; with fewer than k records in total, all of them are returned.
 
 ### withinPolygon()
 
@@ -315,6 +330,10 @@ $polygon = [
 
 $inPolygon = $db->withinPolygon("restaurants", "location", $polygon);
 ```
+
+`$polygon` may be a Polygon (holes are excluded) or a MultiPolygon. A geometry matches when it lies
+entirely inside: every vertex inside and no edge crossing the boundary (a line that leaves and re-enters
+a concave polygon does not match).
 
 ---
 
@@ -341,8 +360,10 @@ $results = $db->query("restaurants")
 ### nearest()
 
 ```php
+// The 10 nearest open restaurants: k is applied after the other filters
 $results = $db->query("restaurants")
     ->nearest('location', 28.9784, 41.0082, 10)
+    ->where(['open_now' => true])
     ->get();
 ```
 
@@ -365,8 +386,13 @@ $results = $db->query("restaurants")
     ->sort('_distance', 'asc')
     ->get();
 
-// Each result has _distance field in meters
+// Each result has _distance in meters, computed before sort()
 ```
+
+`_distance` is measured like the spatial filters: 0 for a point inside a polygon, otherwise to the
+geometry's nearest point (4 decimals). In the query builder `withinDistance()` and `nearest()` already
+add `_distance` to their own center (2 decimals); `withDistance()` replaces it with the distance to its
+point.
 
 ---
 
@@ -704,12 +730,24 @@ if (!$validation['valid']) {
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| "Spatial index already exists" | Duplicate createSpatialIndex | Check with hasSpatialIndex first |
-| "Spatial index not found" | Query without index | Create index before querying |
-| "Invalid GeoJSON" | Malformed geometry | Validate with validateGeoJSON() |
-| "Ring must be closed" | Polygon not closed | Ensure first == last point |
-| "Invalid longitude" | lon > 180 or < -180 | Use valid coordinates |
-| "Invalid latitude" | lat > 90 or < -90 | Use valid coordinates |
+| "Spatial index already exists for field 'x'" | Duplicate createSpatialIndex | Check with hasSpatialIndex first |
+| "Missing type property", "Unknown geometry type: X", "Coordinates must be an array", ... | Malformed geometry | Validate with validateGeoJSON() |
+| "Ring 0 must be closed (first and last positions must be identical)" | Polygon not closed | Ensure first == last point (compared numerically: `29` equals `29.0`) |
+| "Ring 0 must have at least 4 positions" | Too few positions | A closed ring needs 4+ positions |
+| "Ring 0 must not intersect itself" | Bow-tie / self-crossing ring | Fix the ring order |
+| "Hole 1 must lie inside the outer ring" | Hole outside its shell | Fix the polygon |
+| "Point coordinates must be finite numbers" | NaN, INF or strings | Use numbers |
+| "Longitude must be between -180 and 180" | lon > 180 or < -180 | Use valid coordinates |
+| "Latitude must be between -90 and 90" | lat > 90 or < -90 | Use valid coordinates |
+
+Queries work without a spatial index too (they scan the records); an index only makes them faster.
+Records whose geometry is invalid are not indexed and never match spatial queries.
+
+### Sharded databases and field names
+
+Spatial indexes work the same on sharded databases (one R-tree per shard plus each shard's bounding
+box for shard skipping), follow automatic migration to shards, and cover shards created later.
+Field names may contain any characters (`home-loc`, `konum.ev`).
 
 ---
 
@@ -717,6 +755,7 @@ if (!$validation['valid']) {
 
 | Version | Changes |
 |---------|---------|
+| 3.2.0 | Sharded databases supported; buffered inserts indexed; antimeridian/pole searches; nearest() maxDistance returns partial results; distance to the nearest point of a geometry; MultiPolygon queries; edge-aware withinPolygon; stricter validation; crash-safe index maintenance |
 | 3.1.0 | Initial spatial indexing with R-tree |
 | 3.1.0 | GeoJSON validation |
 | 3.1.0 | withinDistance, withinBBox, nearest, withinPolygon |

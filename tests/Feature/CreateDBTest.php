@@ -14,7 +14,7 @@ class CreateDBTest extends noneDBTestCase
      */
     public function createDBReturnsTrueOnSuccess(): void
     {
-        $result = $this->noneDB->createDB('new_database');
+        $result = $this->noneDB->createDB('new-database');
 
         $this->assertTrue($result);
     }
@@ -70,10 +70,14 @@ class CreateDBTest extends noneDBTestCase
      */
     public function createDBSanitizesName(): void
     {
-        $this->noneDB->createDB('test<script>db');
-
-        // Should create 'testscriptdb' after sanitization
-        $this->assertDatabaseExists('testscriptdb');
+        // v3.2.0: invalid names are rejected instead of being sanitized
+        try {
+            $this->noneDB->createDB('test<script>db');
+            $this->fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('invalid database name', $e->getMessage());
+        }
+        $this->assertDatabaseNotExists('testscriptdb');
     }
 
     /**
