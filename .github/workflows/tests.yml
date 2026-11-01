@@ -126,11 +126,10 @@ jobs:
         run: rm -rf tests/test_db examples/db
 
   windows:
-    # Windows (file locking, rename retries): informational until it has been seen green
+    # Windows (file locking, rename retries)
     name: PHP ${{ matrix.php-version }} (Windows)
     needs: fixtures
     runs-on: windows-latest
-    continue-on-error: true
 
     strategy:
       fail-fast: false

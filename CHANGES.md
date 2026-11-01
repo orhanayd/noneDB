@@ -1,6 +1,6 @@
 # noneDB Changelog
 
-## v4.0.0 (unreleased)
+## v4.0.0 (2026-11-01)
 
 ### A new engine and a new storage format
 
