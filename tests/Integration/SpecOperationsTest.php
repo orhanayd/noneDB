@@ -694,10 +694,10 @@ class SpecOperationsTest extends RegressionTestCase
         $write($proj, 'from-root');                // 3. the Composer project root
         $this->assertSame(self::resolvedDir($proj . '/from-root/') . ' file', $run());
         $write($vendor, 'from-lib');               // 2. noneDB.php's directory
-        $this->assertSame($vendor . '/from-lib/ file', $run());
+        $this->assertSame(self::resolvedDir($vendor . '/from-lib/') . ' file', $run());
         $write($proj . '/public', 'from-script');  // 1. the entry script's directory
-        $this->assertSame($proj . '/public/from-script/ file', $run());
-        $this->assertSame($proj . '/public/from-script/ file', $run('DEV=1'), 'a file found: dev mode is not used');
+        $this->assertSame(self::resolvedDir($proj . '/public/from-script/') . ' file', $run());
+        $this->assertSame(self::resolvedDir($proj . '/public/from-script/') . ' file', $run('DEV=1'), 'a file found: dev mode is not used');
     }
 
     /** @test the template is the .nonedb.example next to noneDB.php, null when it isn't there (docs "Configuration Helpers") */

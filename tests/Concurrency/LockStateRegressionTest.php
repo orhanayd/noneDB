@@ -51,7 +51,7 @@ class LockStateRegressionTest extends RegressionTestCase
     {
         clearstatcache();
         $path = $this->dbPath($dbName, 'lock');
-        $held = \noneDB\Tests\Support\Testing::get('lockHandles')[$path]['fp'] ?? null;
+        $held = \noneDB\Tests\Support\Testing::get('lockRegistry')[$path]['fp'] ?? null;
         if (PHP_OS_FAMILY === 'Windows' && is_resource($held)) {
             rewind($held); // a lock keeps every other handle from reading the file
             return (string)fread($held, 8192);
