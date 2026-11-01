@@ -255,7 +255,7 @@ function runRelease(string $root, array $release, array $settings, string $work,
         + (isset($settings['shardSize']) ? ['shardSize' => $settings['shardSize']] : []), true) : 'null';
     $script = "$work/run-" . bin2hex(random_bytes(4)) . '.php';
     file_put_contents($script, '<?php
-error_reporting(E_ALL & ~E_DEPRECATED);
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 const V3_OTHER_KEY = ' . var_export(V3_OTHER_KEY, true) . ';
 require ' . var_export($lib, true) . ';
 final class Adapter {
@@ -291,7 +291,8 @@ final class Adapter {
 $a = new Adapter(' . var_export($family, true) . ', ' . $config . ');
 $db = $a->db;
 ' . $body . "\n");
-    $process = proc_open([$php, $script], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $work);
+    // Without notices (1.4 gives one on a key that isn't there), and what is left comes here whatever php.ini says
+    $process = proc_open([$php, '-d', 'display_errors=1', '-d', 'log_errors=0', $script], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $work);
     $out = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
     fclose($pipes[1]);
     fclose($pipes[2]);

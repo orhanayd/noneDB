@@ -19137,7 +19137,7 @@ final class Writer {
 namespace {
 class noneDB {
     /** This library's version */
-    public const VERSION = '4.0.0-rc.6';
+    public const VERSION = '4.0.0';
     /** The storage format it reads and writes (docs/STORAGE_FORMAT.md) */
     public const STORAGE_FORMAT = 4;
 

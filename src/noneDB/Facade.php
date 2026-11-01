@@ -2,7 +2,7 @@
 // The public API: every call goes to the instance's kernel (src/Internal)
 trait noneDB_Facade {
     /** This library's version */
-    public const VERSION = '4.0.0-rc.6';
+    public const VERSION = '4.0.0';
     /** The storage format it reads and writes (docs/STORAGE_FORMAT.md) */
     public const STORAGE_FORMAT = 4;
 

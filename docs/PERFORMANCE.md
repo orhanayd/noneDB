@@ -13,7 +13,7 @@ faster, with no verified regression.
 
 ## 1. Summary
 
-- **The performance gate** (§2): two independent runs of 66 workloads on the release candidate.
+- **The performance gate** (§2): two independent runs of 66 workloads.
   - 46 workloads are verified improvements and 13 show no verified change.
   - 5 are findings, significant in both runs: one insert into a small shard is 3.2–7.0% slower, the others at most 3.1%.
   - 2 are fixed costs of the fail-closed store, within their budgets.
@@ -58,7 +58,7 @@ faster, with no verified regression.
   A time regression within its budget in both runs is reported as "within budget".
 - **Settings:** performance mode; child processes with `memory_limit=-1`; the operating system's file cache warm.
 
-**Result** (2026-11-01, release candidates `4.0.0-rc.5`, artifact `3f1b2205…`, 2 × 20 minutes, and `4.0.0-rc.6`, artifact `7b29f3cd…`: rc.6 changed the field index code, so the 15 workloads of that code were measured again on it, 2 × 2.5 minutes, and their rows below are rc.6's):
+**Result** (2026-11-01, 2 × 20 minutes; the 15 workloads of the field index code were measured again after its last change, 2 × 2.5 minutes, and their rows below are those):
 
 | Workload | 3.3-dev median per run | Ratio run 1 [99% CI] | Ratio run 2 [99% CI] | p95 ratio (1 / 2) | Memory ratio (1) | Verdict |
 |---|---|---|---|---|---|---|
@@ -156,7 +156,7 @@ and with 1000 shards of 10,000.
 - **Cold:** 40 new processes.
 - **Warm:** 200 key lookups or updates, or 40 indexed queries, in a process that has already run one of the kind.
 - **Memory:** `cacheMemoryLimit` is `'auto'` unless a row says otherwise.
-- **What was measured:** the release candidate `4.0.0-rc.6` (artifact `7b29f3cd…`, 2026-11-01), and 3.3-dev
+- **What was measured:** version 4.0.0 (2026-11-01), and 3.3-dev
   (`32c3d641…`).
 
 | | 4.0, 100 shards | 3.3-dev, 100 shards | 4.0, 1000 shards | 3.3-dev, 1000 shards |
@@ -194,7 +194,7 @@ records takes most of the time, in both.
 
 **The 1000-shard query holds data files** under the automatic cache limit (§4). That is where its median comes from, and it has
 a price: a warm process peaks at 1380 MiB, and the queries that load a file show as the p95 and p99. All three stay under
-3.3-dev's. The previous release candidate, which held none, had a median of 42.4 ms at a peak of 380 MiB.
+3.3-dev's. A build that held none had a median of 42.4 ms at a peak of 380 MiB.
 
 ## 4. First use and later use
 
@@ -286,7 +286,7 @@ it created or renamed a file, to reach the device (DURABILITY.md). Its cost is t
 That is a property of the disk and its cache, from tens of microseconds on an SSD with power-loss protection to
 milliseconds elsewhere. PHP can't flush the drive cache on macOS, so durable mode isn't measured there. Performance mode, which every number of this document uses, issues no sync on the write path.
 
-The release candidate measured on Linux: PHP 8.5 in a Docker container, a database of 10,000 records, not sharded, 300 runs
+Measured on Linux: PHP 8.5 in a Docker container, a database of 10,000 records, not sharded, 300 runs
 of each single operation. The container's virtual disk syncs at two speeds, about 0.35 and about 1.3 ms, and the median of a run
 can fall on either; a real device gives its own number.
 
