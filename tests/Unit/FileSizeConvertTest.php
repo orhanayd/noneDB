@@ -182,9 +182,25 @@ class FileSizeConvertTest extends noneDBTestCase
     public function floatInput(): void
     {
         $method = $this->getPrivateMethod('fileSizeConvert');
-        $result = $method->invoke($this->noneDB, 1024.5);
 
-        $this->assertIsString($result, 'Should handle float input');
+        // 1024.5 / 1024 = 1.00049 -> rounded to 2 decimals: 1
+        $this->assertSame('1 KB', $method->invoke($this->noneDB, 1024.5));
+        // 1536.5 / 1024 = 1.50049 -> 1.5
+        $this->assertSame('1,5 KB', $method->invoke($this->noneDB, 1536.5));
+        // 512.25 bytes stay bytes: 512.25
+        $this->assertSame('512,25 B', $method->invoke($this->noneDB, 512.25));
+    }
+
+    /**
+     * @test TB is the largest unit: larger sizes stay in TB
+     */
+    public function largerThanTerabytesStaysInTerabytes(): void
+    {
+        $method = $this->getPrivateMethod('fileSizeConvert');
+
+        $this->assertSame('2048 TB', $method->invoke($this->noneDB, pow(1024, 4) * 2048));
+        // 1.5 TB
+        $this->assertSame('1,5 TB', $method->invoke($this->noneDB, pow(1024, 4) * 1.5));
     }
 
     /**
@@ -210,7 +226,7 @@ class FileSizeConvertTest extends noneDBTestCase
 
         foreach ($values as $i => $value) {
             $result = $method->invoke($this->noneDB, $value);
-            $this->assertStringEndsWith(' ' . $units[$i], $result, "Should end with {$units[$i]}");
+            $this->assertSame('1 ' . $units[$i], $result, "exactly one {$units[$i]}");
         }
     }
 }

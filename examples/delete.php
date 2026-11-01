@@ -45,9 +45,9 @@ echo "   Deleted inactive users with role=user: " . $result['n'] . "\n";
 echo "   Remaining: " . $db->count("users") . " users\n";
 
 // -----------------------------------------
-// 3. Delete by Key (Index)
+// 3. Delete by Key
 // -----------------------------------------
-echo "\n3. Delete by Key (Index):\n";
+echo "\n3. Delete by Key:\n";
 
 // First, find current keys
 $users = $db->find("users", 0);
@@ -118,7 +118,7 @@ echo "   Deleted all: " . $result['n'] . "\n";
 echo "   Sessions after: " . $db->count("session") . "\n";
 
 // -----------------------------------------
-// 7. Deleted Records Become NULL
+// 7. What Happens to Deleted Records
 // -----------------------------------------
 echo "\n7. Technical Note - Deleted Records:\n";
 echo "   - Deleted records disappear from find() immediately\n";
@@ -134,6 +134,8 @@ echo "\n8. Using compact() After Deletes:\n";
 $info = $db->getShardInfo("users");
 echo "   Before compact - Total records: " . ($info['totalRecords'] ?? 'N/A') . "\n";
 
+// Auto-compaction already ran when deleted records passed 30% of the file (autoCompactThreshold),
+// so compact() only frees what was deleted after that
 $result = $db->compact("users");
 echo "   Freed slots: " . $result['freedSlots'] . "\n";
 echo "   After compact - Total records: " . $result['totalRecords'] . "\n";

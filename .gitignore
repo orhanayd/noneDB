@@ -3,19 +3,28 @@
 composer.phar
 composer.lock
 
-# Database files
+# Database files (noneDB 4 store; files of earlier versions until they are migrated)
+/db/*.ndb4/
+/db/STORE
+/db/STORE.2
+/db/STORE.LOCK
+/db/STORE*.tmp*
+/db/.nonedb-maintenance/
+/db/.nonedb-retained/
 /db/*.nonedb
 /db/*.nonedbinfo
 /db/*.nonedb.*
 
 # Test artifacts
 /tests/test_db/
+/tests/build/
 .phpunit.result.cache
 .phpunit.cache/
 
 # IDE
 .idea/
 .vscode/
+.claude/
 *.sublime-*
 
 # OS
@@ -38,3 +47,21 @@ CLAUDE.md
 
 # Example databases
 /examples/db/
+
+# Evidence stays on this machine; git keeps only the frozen baseline (the gate and the 3.3-dev fixtures need it)
+/build/*
+!/build/baseline/
+
+*.nonedb
+*.jidx
+*.meta
+*.backup
+*.nonedbinfo
+
+# Databases the earlier releases wrote: tools/make-migration-fixtures.php makes them from git (CI too)
+/tests/Migration/fixtures/
+
+# Working notes, a tool of the 3.3 gates nothing uses any more
+/v4.0.0.plan.md
+/docs/v4/
+/tools/gate-evidence.php

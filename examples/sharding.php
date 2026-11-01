@@ -2,7 +2,7 @@
 /**
  * noneDB - Sharding Example
  *
- * Demonstrates auto-sharding features: getShardInfo(), compact(), migrate()
+ * Demonstrates auto-sharding features: getShardInfo(), compact(), convertToSharded()
  * and sharding behavior with large datasets.
  */
 
@@ -58,24 +58,24 @@ $info = $db->getShardInfo("nonexistent");
 echo "   Result: " . ($info === false ? "false (database not found)" : json_encode($info)) . "\n";
 
 // ==========================================
-// MANUAL MIGRATION
+// SWITCHING TO SHARDS BY HAND
 // ==========================================
-echo "\n=== MANUAL MIGRATION ===\n\n";
+echo "\n=== SWITCHING TO SHARDS BY HAND ===\n\n";
 
-echo "1. Migrate non-existent database:\n";
-$result = $db->migrate("nonexistent");
+echo "1. convertToSharded() on a database that doesn't exist:\n";
+$result = $db->convertToSharded("nonexistent");
 echo "   " . json_encode($result) . "\n";
 
-echo "\n2. Migrate small database (will create shards):\n";
-$result = $db->migrate("small-db");
+echo "\n2. convertToSharded() on a small database (creates its shards):\n";
+$result = $db->convertToSharded("small-db");
 echo "   " . json_encode($result) . "\n";
 
-// Check after migration
+// Check after the switch
 $info = $db->getShardInfo("small-db");
-echo "   After migration - Sharded: " . ($info['sharded'] ? "true" : "false") . "\n";
+echo "   After the switch - Sharded: " . ($info['sharded'] ? "true" : "false") . "\n";
 
-echo "\n3. Try to migrate again (already sharded):\n";
-$result = $db->migrate("small-db");
+echo "\n3. Again (already sharded):\n";
+$result = $db->convertToSharded("small-db");
 echo "   " . json_encode($result) . "\n";
 
 // ==========================================
@@ -83,8 +83,10 @@ echo "   " . json_encode($result) . "\n";
 // ==========================================
 echo "\n=== COMPACT ===\n\n";
 
-// Create database with deletions
-$db->insert("with-deletions", [
+// Create database with deletions. A high autoCompactThreshold keeps auto-compaction (by default once
+// deleted records pass 30%) from running first, so compact() has something to do
+$manual = exampleDb(["autoCompactThreshold" => 0.9]);
+$manual->insert("with-deletions", [
     ["id" => 1, "name" => "Keep 1"],
     ["id" => 2, "name" => "Delete me"],
     ["id" => 3, "name" => "Keep 2"],
@@ -93,18 +95,18 @@ $db->insert("with-deletions", [
 ]);
 
 echo "1. Before deletion:\n";
-echo "   Records: " . $db->count("with-deletions") . "\n";
+echo "   Records: " . $manual->count("with-deletions") . "\n";
 
 // Delete some records
-$db->delete("with-deletions", ["name" => "Delete me"]);
-$db->delete("with-deletions", ["name" => "Delete me too"]);
+$manual->delete("with-deletions", ["name" => "Delete me"]);
+$manual->delete("with-deletions", ["name" => "Delete me too"]);
 
 echo "\n2. After deletion (deleted records are hidden immediately; their bytes stay in the file until compaction):\n";
-echo "   Visible records: " . $db->count("with-deletions") . "\n";
+echo "   Visible records: " . $manual->count("with-deletions") . "\n";
 
-// Compact to remove null entries
+// Compact: rewrite the file without the superseded and deleted lines
 echo "\n3. After compact:\n";
-$result = $db->compact("with-deletions");
+$result = $manual->compact("with-deletions");
 echo "   Result: " . json_encode($result) . "\n";
 echo "   Freed slots: " . $result['freedSlots'] . "\n";
 echo "   Total records: " . $result['totalRecords'] . "\n";
@@ -143,7 +145,7 @@ echo "   Total records: " . $info['totalRecords'] . "\n";
 // ==========================================
 echo "\n=== KEY-BASED LOOKUP ===\n\n";
 
-echo "Key-based lookups are fast because they only read one shard.\n\n";
+echo "Key lookups use the byte-offset index, sharded or not.\n\n";
 
 // Find by key
 $start = microtime(true);
@@ -164,24 +166,14 @@ echo "   Time: " . $findTime . " ms\n";
 echo "   Found: " . count($result) . " records\n";
 
 // ==========================================
-// SHARDING BENEFITS SUMMARY
+// WHAT SHARDING CHANGES
 // ==========================================
-echo "\n=== SHARDING BENEFITS ===\n\n";
+echo "\n=== WHAT SHARDING CHANGES ===\n\n";
 
-echo "Without Sharding (500K records):\n";
-echo "   - Every operation reads entire 50MB file\n";
-echo "   - find(key) takes ~772ms, uses ~1.1GB RAM\n";
-echo "   - insert() takes ~706ms\n\n";
-
-echo "With Sharding (500K records, 50 shards):\n";
-echo "   - Key lookups read only 1 shard (~1MB)\n";
-echo "   - find(key) takes ~16ms, uses ~1MB RAM\n";
-echo "   - 50x faster, 1000x less memory\n\n";
-
-echo "When to use sharding:\n";
-echo "   - < 10K records: Sharding unnecessary\n";
-echo "   - 10K - 100K: Beneficial for key lookups\n";
-echo "   - 100K - 500K: Highly recommended\n";
-echo "   - > 500K: Consider dedicated database\n";
+echo "   - The first key lookup of a process loads one shard's index, not the whole database's\n";
+echo "   - Auto-compaction rewrites one shard file at a time\n";
+echo "   - Field indexes let filtered queries skip shards that can't match\n";
+echo "   - Filters on fields without an index scan the shards (limit(), first() and exists() stop early)\n";
+echo "   Measurements: docs/PERFORMANCE.md\n";
 
 echo "\n=== Sharding Examples Complete ===\n";

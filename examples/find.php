@@ -56,9 +56,9 @@ $activeIstanbul = $db->find("users", [
 echo "   Active users in Istanbul: " . count($activeIstanbul) . "\n";
 
 // -----------------------------------------
-// 4. Find by Key (Index)
+// 4. Find by Key
 // -----------------------------------------
-echo "\n4. Find by Key (Index):\n";
+echo "\n4. Find by Key:\n";
 
 // Single key
 $user = $db->find("users", ["key" => 0]);

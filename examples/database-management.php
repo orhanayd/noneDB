@@ -170,17 +170,17 @@ echo "\n=== BEST PRACTICES ===\n\n";
 
 echo "1. Database Naming:\n";
 echo "   - Use lowercase letters and hyphens\n";
-echo "   - Avoid special characters (they get removed)\n";
+echo "   - Only letters, digits, space, apostrophe and hyphen are allowed\n";
 echo "   - Be consistent: 'user-profiles' not 'userProfiles'\n";
 
 echo "\n2. Database Organization:\n";
 echo "   - Separate concerns: users, orders, logs\n";
 echo "   - Don't mix unrelated data in one database\n";
-echo "   - Consider sharding for large datasets\n";
+echo "   - Large databases are sharded automatically (shardSize records per shard)\n";
 
 echo "\n3. Security:\n";
-echo "   - Change \$secretKey before production!\n";
-echo "   - Protect /db directory with .htaccess\n";
+echo "   - Put a random secretKey in your .nonedb file (php -r \"echo bin2hex(random_bytes(32));\")\n";
+echo "   - Keep dbDir and .nonedb outside the web root\n";
 echo "   - Validate database names from user input (invalid names throw InvalidArgumentException)\n";
 
 echo "\n=== Database Management Examples Complete ===\n";

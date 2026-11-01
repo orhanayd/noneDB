@@ -33,8 +33,7 @@ class LimitTest extends noneDBTestCase
         $array = $this->getSampleArray();
         $result = $this->noneDB->limit($array, 3);
 
-        $this->assertIsArray($result);
-        $this->assertCount(3, $result);
+        $this->assertSame(array_slice($array, 0, 3), $result);
     }
 
     /**
@@ -45,8 +44,7 @@ class LimitTest extends noneDBTestCase
         $array = $this->getSampleArray();
         $result = $this->noneDB->limit($array, 2);
 
-        $this->assertEquals(1, $result[0]['id']);
-        $this->assertEquals(2, $result[1]['id']);
+        $this->assertSame([['id' => 1, 'name' => 'Item 1'], ['id' => 2, 'name' => 'Item 2']], $result);
     }
 
     /**
@@ -83,6 +81,11 @@ class LimitTest extends noneDBTestCase
 
         $result = $this->noneDB->limit($array, '3');
         $this->assertFalse($result, 'String limit should return false');
+
+        $this->assertFalse($this->noneDB->limit($array, 2.0), 'a float, even a whole one');
+        $this->assertFalse($this->noneDB->limit($array, null));
+        $this->assertFalse($this->noneDB->limit($array, true));
+        $this->assertFalse($this->noneDB->limit($array), 'the default limit 0 is not a limit');
     }
 
     /**
@@ -99,10 +102,12 @@ class LimitTest extends noneDBTestCase
     /**
      * @test
      */
-    public function emptyArrayReturnsFalse(): void
+    public function emptyArrayReturnsEmptyArray(): void
     {
-        // v3.2.0: an empty result set limited is still an empty result set (it used to be false)
+        // An empty result set limited is still an empty result set (not false)
         $this->assertSame([], $this->noneDB->limit([], 3));
+        $this->assertSame([], $this->noneDB->limit([], 1));
+        $this->assertFalse($this->noneDB->limit([], 0), 'an invalid limit is invalid also for an empty array');
     }
 
     /**
@@ -113,8 +118,8 @@ class LimitTest extends noneDBTestCase
         $array = $this->getSampleArray();
         $result = $this->noneDB->limit($array, 100);
 
-        $this->assertIsArray($result);
-        $this->assertCount(5, $result, 'Should return all elements when limit exceeds array size');
+        $this->assertSame($array, $result, 'Should return all elements when limit exceeds array size');
+        $this->assertSame($array, $this->noneDB->limit($array, 5), 'limit equal to the size');
     }
 
     /**
@@ -140,9 +145,7 @@ class LimitTest extends noneDBTestCase
         $array = $this->getSampleArray();
         $result = $this->noneDB->limit($array, 1);
 
-        $this->assertIsArray($result);
-        $this->assertCount(1, $result);
-        $this->assertEquals(1, $result[0]['id']);
+        $this->assertSame([['id' => 1, 'name' => 'Item 1']], $result);
     }
 
     /**
@@ -153,8 +156,8 @@ class LimitTest extends noneDBTestCase
         $array = $this->getSampleArray();
         $result = $this->noneDB->limit($array, 2);
 
-        $this->assertArrayHasKey('id', $result[0]);
-        $this->assertArrayHasKey('name', $result[0]);
+        $this->assertSame($array[0], $result[0]);
+        $this->assertSame($array[1], $result[1]);
     }
 
     /**
@@ -170,9 +173,7 @@ class LimitTest extends noneDBTestCase
 
         $result = $this->noneDB->limit($array, 2);
 
-        $this->assertIsArray($result);
-        $this->assertCount(2, $result);
-        $this->assertEquals('john', $result[0]['username']);
+        $this->assertSame([['username' => 'john', 'email' => 'john@test.com'], ['username' => 'jane', 'email' => 'jane@test.com']], $result);
     }
 
     /**
@@ -188,24 +189,21 @@ class LimitTest extends noneDBTestCase
 
         $result = $this->noneDB->limit($array, 2);
 
-        $this->assertIsArray($result);
-        $this->assertCount(2, $result);
-        $this->assertTrue($result[0]['active']);
-        $this->assertEquals(85.5, $result[0]['score']);
+        $this->assertSame([['id' => 1, 'active' => true, 'score' => 85.5], ['id' => 2, 'active' => false, 'score' => 92.0]], $result);
     }
 
     /**
      * @test
      */
-    public function preservesNumericArrayKeys(): void
+    public function returnsAListOfTheFirstRecords(): void
     {
         $array = $this->getSampleArray();
         $result = $this->noneDB->limit($array, 3);
 
-        // Keys should be reindexed (0, 1, 2)
-        $this->assertArrayHasKey(0, $result);
-        $this->assertArrayHasKey(1, $result);
-        $this->assertArrayHasKey(2, $result);
+        $this->assertSame([0, 1, 2], array_keys($result));
+        // A result with other keys (e.g. after array_filter) gives the first N records as a list
+        $filtered = [3 => ['id' => 4], 7 => ['id' => 8], 9 => ['id' => 10]];
+        $this->assertSame([['id' => 4], ['id' => 8]], $this->noneDB->limit($filtered, 2));
     }
 
     /**
@@ -221,8 +219,6 @@ class LimitTest extends noneDBTestCase
 
         $result = $this->noneDB->limit($array, 2);
 
-        $this->assertIsArray($result);
-        $this->assertCount(2, $result);
-        $this->assertEquals('value1', $result[0]['data']['nested']);
+        $this->assertSame([['data' => ['nested' => 'value1']], ['data' => ['nested' => 'value2']]], $result);
     }
 }

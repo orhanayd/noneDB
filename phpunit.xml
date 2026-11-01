@@ -11,17 +11,29 @@
          convertDeprecationsToExceptions="true">
 
     <testsuites>
+        <!-- Single components, the build and the source boundaries -->
         <testsuite name="Unit">
             <directory>tests/Unit</directory>
         </testsuite>
-        <testsuite name="Feature">
-            <directory>tests/Feature</directory>
-        </testsuite>
+        <!-- The public API and the documented rules (specification tests), through real files -->
         <testsuite name="Integration">
             <directory>tests/Integration</directory>
         </testsuite>
-        <testsuite name="Regression">
-            <directory>tests/Regression</directory>
+        <!-- Interruptions at every step (exit and SIGKILL in child processes), torn writes, rollback -->
+        <testsuite name="Crash">
+            <directory>tests/Crash</directory>
+        </testsuite>
+        <!-- Several processes on one database: locks, lock state, cache validation -->
+        <testsuite name="Concurrency">
+            <directory>tests/Concurrency</directory>
+        </testsuite>
+        <!-- Results against independent models: fuzzing, index = scan, geometry -->
+        <testsuite name="Differential">
+            <directory>tests/Differential</directory>
+        </testsuite>
+        <!-- noneDB-migrate.php: databases written by the earlier releases themselves (tests/Migration/fixtures) -->
+        <testsuite name="Migration">
+            <directory>tests/Migration</directory>
         </testsuite>
     </testsuites>
 

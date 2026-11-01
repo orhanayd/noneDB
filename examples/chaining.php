@@ -207,16 +207,16 @@ echo "   Deleted " . $result['n'] . " inactive users\n";
 echo "   Users before: $before, after: $after\n";
 
 // ==========================================
-// COMPARISON: OLD vs NEW API
+// COMPARISON: DIRECT METHODS vs QUERY BUILDER
 // ==========================================
-echo "\n=== OLD vs NEW API ===\n\n";
+echo "\n=== DIRECT METHODS vs QUERY BUILDER ===\n\n";
 
-echo "OLD API (still works):\n";
+echo "Direct methods:\n";
 echo '   $results = $db->find("users", ["active" => true]);' . "\n";
 echo '   $sorted = $db->sort($results, "score", "desc");' . "\n";
 echo '   $limited = $db->limit($sorted, 5);' . "\n";
 
-echo "\nNEW API (fluent chaining):\n";
+echo "\nQuery builder:\n";
 echo '   $results = $db->query("users")' . "\n";
 echo '       ->where(["active" => true])' . "\n";
 echo '       ->sort("score", "desc")' . "\n";
