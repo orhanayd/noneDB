@@ -328,7 +328,7 @@ class HardeningRegressionTest extends RegressionTestCase
     public function dbDirWithGlobCharactersWorks(): void
     {
         // A-7: glob() read [ab] as a pattern: interrupted flushes were never replayed, dropDB deleted nothing
-        $dir = $this->testDbDir . '[ab]*?/';
+        $dir = $this->testDbDir . (PHP_OS_FAMILY === 'Windows' ? '[ab]/' : '[ab]*?/'); // no * or ? in a name on Windows
         @mkdir($dir, 0777, true);
         try {
             $config = ['secretKey' => self::SECRET, 'dbDir' => $dir, 'bufferEnabled' => true, 'shardSize' => 4];

@@ -94,6 +94,7 @@ final class Migration {
      * @throws Stop
      */
     public static function abort(string $dir): array {
+        \noneDB::clearStaticCache(); // staging goes: Windows removes no file that is open
         $run = new self($dir, '', '', []);
         $journal = Journal::read($run->dir);
         if($journal === null || ($journal['op'] ?? null) !== 'migrate'){
@@ -317,6 +318,7 @@ final class Migration {
             }, $journal['targets']);
             $this->write($journal);
         }
+        \noneDB::clearStaticCache(); // the engine's lock handles: Windows moves no directory with an open file in it
         foreach($journal['published'] as $locator){
             $staged = $this->staging() . $locator;
             if(is_dir($this->dir . $locator) && !is_dir($staged)){
@@ -368,6 +370,7 @@ final class Migration {
         Files::makeDir($retained . '/files');
         foreach(self::prints($journal['files']) as $file => $fingerprint){
             if(is_file($this->dir . $file)){
+                $this->unlock($this->dir . $file);
                 if(!@rename($this->dir . $file, "$retained/files/$file")){
                     throw new Stop('MAINTENANCE_IN_PROGRESS', "committed, not completed: cannot move $file into $retained; run again");
                 }
@@ -478,7 +481,8 @@ final class Migration {
                 throw $busy ? new Stop('MAINTENANCE_BUSY', basename($path) . ' is locked by another process; nothing was changed')
                     : new Stop('FAILED', "cannot open $path (permissions of the directory?); nothing was changed");
             }
-            $this->locks[] = $fp;
+            $this->locks[$path] = $fp;
+            Files::keepLocked($path, $fp);
         }
     }
 
@@ -504,10 +508,19 @@ final class Migration {
         return $prints;
     }
 
+    /** A file of the run leaves the directory: its lock goes first */
+    private function unlock(string $path): void {
+        if(isset($this->locks[$path])){
+            flock($this->locks[$path], LOCK_UN);
+            fclose($this->locks[$path]);
+            unset($this->locks[$path]);
+        }
+    }
+
     private function fingerprint(string $file): ?array {
         clearstatcache(true, $this->dir . $file);
         $stat = @stat($this->dir . $file);
-        return $stat === false ? null : [$stat['size'], $stat['mtime'], $stat['ino'], hash_file('sha256', $this->dir . $file)];
+        return $stat === false ? null : [$stat['size'], $stat['mtime'], $stat['ino'], Files::sha256($this->dir . $file)];
     }
 
     /** Every file of the groups: file => fingerprint */

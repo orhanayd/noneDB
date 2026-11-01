@@ -48,6 +48,11 @@ final class Restore {
         Journal::write(rtrim($dir, '/'), ['op' => 'restore-old', 'id' => $runId, 'state' => 'RESTORING']);
         Files::makeDir("$runDir/v4", 0700);
         foreach($done['published'] as $locator){
+            if(isset($locks[$dir . $locator . '/LOCK'])){ // Windows moves no directory with an open file in it
+                flock($locks[$dir . $locator . '/LOCK'], LOCK_UN);
+                fclose($locks[$dir . $locator . '/LOCK']);
+                unset($locks[$dir . $locator . '/LOCK']);
+            }
             if(is_dir($dir . $locator) && !@rename($dir . $locator, "$runDir/v4/$locator")){
                 throw new Stop('MAINTENANCE_IN_PROGRESS', "cannot move $locator into the backup; run --restore again");
             }
@@ -141,7 +146,7 @@ final class Restore {
                 throw $busy ? new Stop('MAINTENANCE_BUSY', basename(dirname($path)) . '/' . basename($path) . ' is locked by another process; nothing was changed')
                     : new Stop('FAILED', "cannot open $path (permissions of the directory?); nothing was changed");
             }
-            $locks[] = $fp;
+            $locks[$path] = $fp;
         }
         return $locks;
     }

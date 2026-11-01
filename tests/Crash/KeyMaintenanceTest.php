@@ -287,9 +287,58 @@ class KeyMaintenanceTest extends RegressionTestCase
         $this->assertRotated('after the lock was released');
     }
 
+    /**
+     * @test docs/OPERATIONS.md: on Windows no directory with an open file in it can move, and a process keeps the handle of
+     * the LOCK it used. The rotation stops before its commit and says so, the old key stays out, and it finishes once that
+     * process has ended
+     */
+    public function aRotationWaitsForAProcessThatKeepsItsLockHandle(): void
+    {
+        if (PHP_OS_FAMILY !== 'Windows') {
+            $this->markTestSkipped('a directory with an open file in it moves everywhere else');
+        }
+        $this->seed();
+        $go = $this->testDbDir . '../rot-go';
+        $ready = $this->testDbDir . '../rot-ready';
+        @unlink($go);
+        @unlink($ready);
+        $proc = proc_open([PHP_BINARY, $this->childScript('
+            $db = new noneDB(["secretKey" => ' . var_export(self::SECRET, true) . ', "dbDir" => ' . var_export($this->testDbDir, true) . ']);
+            $db->find("users", 0);
+            file_put_contents(' . var_export($ready, true) . ', "1");
+            $deadline = microtime(true) + 30;
+            while (!is_file(' . var_export($go, true) . ') && microtime(true) < $deadline) {
+                usleep(5000);
+            }
+        ')], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        try {
+            $deadline = microtime(true) + 10;
+            while (!is_file($ready) && microtime(true) < $deadline) {
+                usleep(5000);
+            }
+            $result = \noneDB::migrateKey($this->testDbDir, self::SECRET, self::NEW);
+            $this->assertFalse($result['success'], 'the directory can not move under the process');
+            $this->assertStringContainsString('run migrateKey() again', (string)$result['error']);
+        } finally {
+            file_put_contents($go, '1');
+            stream_get_contents($pipes[1]);
+            stream_get_contents($pipes[2]);
+            proc_close($proc);
+            @unlink($go);
+            @unlink($ready);
+        }
+        \noneDB::clearStaticCache();
+        $result = \noneDB::migrateKey($this->testDbDir, self::SECRET, self::NEW);
+        $this->assertTrue($result['success'], 'the process has ended: ' . (string)($result['error'] ?? ''));
+        $this->assertCount(4, $this->with(self::NEW)->find('users', 0));
+    }
+
     /** @test */
     public function aRunningProcessNeverSeesAnEmptyDatabaseDuringARotation(): void
     {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('a running process keeps its lock handle: aRotationWaitsForAProcessThatKeepsItsLockHandle');
+        }
         $this->seed();
         $go = $this->testDbDir . '../rot-go';
         $ready = $this->testDbDir . '../rot-ready';

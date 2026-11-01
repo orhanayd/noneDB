@@ -141,6 +141,9 @@ file_put_contents('/secure/place/store-manifest.json', json_encode($r['storeMani
 **Rotating a key:**
 1. Stop the processes that use the store (a database in use makes the rotation `MAINTENANCE_BUSY`, and nothing
    is written).
+   On Windows a process that has used a database keeps its `LOCK` open while it runs, and a directory with an open file
+   in it can't be renamed. The rotation then stops with "run migrateKey() again": the store stays closed, nothing is lost,
+   and a new run finishes it once that process has ended.
 2. Run `migrateKey()`. Every database directory of the old key is renamed to the new key's locator; contents
    don't change. A process that still runs with the old key gets `MAINTENANCE_IN_PROGRESS` during the rotation and
    `KEY_NOT_REGISTERED` after it, never an empty database.

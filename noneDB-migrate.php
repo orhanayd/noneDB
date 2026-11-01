@@ -40,6 +40,9 @@ final class Files {
     public const FILE_MODE = 0640;
     public const DIR_MODE = 0750;
 
+    /** The lock handles of the run by file name: on Windows a lock keeps every other handle from reading the file */
+    private static $locked = [];
+
     /**
      * Write a file atomically: a temp file in the same directory, synced, renamed over the target, the directory
      * synced; $mode set on it whatever the umask
@@ -150,11 +153,43 @@ final class Files {
      */
     public static function openLock(string $path) {
         $created = !is_file($path);
-        $fp = @fopen($path, 'c');
+        $fp = @fopen($path, 'c+b');
         if($fp !== false && $created){
             @chmod($path, self::FILE_MODE);
         }
         return $fp;
+    }
+
+    /** The run has this file locked: from now on it is read through this handle */
+    public static function keepLocked(string $path, $fp): void {
+        self::$locked[basename($path)] = $fp;
+    }
+
+    /** The handle of a file the run has locked, at the file's start; null for any other file */
+    private static function lockedHandle(string $path) {
+        $fp = self::$locked[basename($path)] ?? null;
+        if(!is_resource($fp)){
+            return null;
+        }
+        rewind($fp);
+        return $fp;
+    }
+
+    /** SHA-256 of a file */
+    public static function sha256(string $path): string {
+        $fp = self::lockedHandle($path);
+        if($fp === null){
+            return (string)@hash_file('sha256', $path);
+        }
+        $hash = hash_init('sha256');
+        hash_update_stream($hash, $fp);
+        return hash_final($hash);
+    }
+
+    /** The first bytes of a file, '' when it can't be read */
+    public static function head(string $path, int $length): string {
+        $fp = self::lockedHandle($path);
+        return (string)($fp === null ? @file_get_contents($path, false, null, 0, $length) : fread($fp, $length));
     }
 
     /**
@@ -162,10 +197,11 @@ final class Files {
      * @throws Stop
      */
     public static function copy(string $from, string $to, ?int $mode = null): string {
-        $in = @fopen($from, 'rb');
+        $held = self::lockedHandle($from);
+        $in = $held ?? @fopen($from, 'rb');
         $out = $in === false ? false : @fopen($to, 'xb');
         if($in === false || $out === false){
-            if($in !== false){
+            if($in !== false && $held === null){
                 fclose($in);
             }
             throw new Stop('FAILED', "cannot copy $from to $to");
@@ -182,7 +218,9 @@ final class Files {
             $ok = fwrite($out, $chunk) === strlen($chunk);
         }
         $ok = $ok && fflush($out) && self::syncHandle($out);
-        fclose($in);
+        if($held === null){
+            fclose($in);
+        }
         fclose($out);
         if(!$ok){
             throw new Stop('FAILED', "cannot copy $from to $to");
@@ -410,7 +448,7 @@ final class Source {
         $lock = $this->path('.nonedb.lock');
         if(is_file($lock)){
             $this->locked = true;
-            $this->epoch = preg_match('/^\d+:[0-9a-f]{8}(?: |$)/', (string)file_get_contents($lock, false, null, 0, 128)) === 1;
+            $this->epoch = preg_match('/^\d+:[0-9a-f]{8}(?: |$)/', \noneDB\Migrate\Files::head($lock, 128)) === 1;
         }
         if(is_file($this->path('.nonedb.meta'))){
             $this->readSharded();
@@ -1419,6 +1457,7 @@ final class Migration {
      * @throws Stop
      */
     public static function abort(string $dir): array {
+        \noneDB::clearStaticCache(); // staging goes: Windows removes no file that is open
         $run = new self($dir, '', '', []);
         $journal = Journal::read($run->dir);
         if($journal === null || ($journal['op'] ?? null) !== 'migrate'){
@@ -1641,6 +1680,7 @@ final class Migration {
             }, $journal['targets']);
             $this->write($journal);
         }
+        \noneDB::clearStaticCache(); // the engine's lock handles: Windows moves no directory with an open file in it
         foreach($journal['published'] as $locator){
             $staged = $this->staging() . $locator;
             if(is_dir($this->dir . $locator) && !is_dir($staged)){
@@ -1690,6 +1730,7 @@ final class Migration {
         Files::makeDir($retained . '/files');
         foreach(self::prints($journal['files']) as $file => $fingerprint){
             if(is_file($this->dir . $file)){
+                $this->unlock($this->dir . $file);
                 if(!@rename($this->dir . $file, "$retained/files/$file")){
                     throw new Stop('MAINTENANCE_IN_PROGRESS', "committed, not completed: cannot move $file into $retained; run again");
                 }
@@ -1796,7 +1837,8 @@ final class Migration {
                 throw $busy ? new Stop('MAINTENANCE_BUSY', basename($path) . ' is locked by another process; nothing was changed')
                     : new Stop('FAILED', "cannot open $path (permissions of the directory?); nothing was changed");
             }
-            $this->locks[] = $fp;
+            $this->locks[$path] = $fp;
+            Files::keepLocked($path, $fp);
         }
     }
 
@@ -1822,10 +1864,19 @@ final class Migration {
         return $prints;
     }
 
+    /** A file of the run leaves the directory: its lock goes first */
+    private function unlock(string $path): void {
+        if(isset($this->locks[$path])){
+            flock($this->locks[$path], LOCK_UN);
+            fclose($this->locks[$path]);
+            unset($this->locks[$path]);
+        }
+    }
+
     private function fingerprint(string $file): ?array {
         clearstatcache(true, $this->dir . $file);
         $stat = @stat($this->dir . $file);
-        return $stat === false ? null : [$stat['size'], $stat['mtime'], $stat['ino'], hash_file('sha256', $this->dir . $file)];
+        return $stat === false ? null : [$stat['size'], $stat['mtime'], $stat['ino'], Files::sha256($this->dir . $file)];
     }
 
     /** Every file of the groups: file => fingerprint */
@@ -1959,6 +2010,11 @@ final class Restore {
         Journal::write(rtrim($dir, '/'), ['op' => 'restore-old', 'id' => $runId, 'state' => 'RESTORING']);
         Files::makeDir("$runDir/v4", 0700);
         foreach($done['published'] as $locator){
+            if(isset($locks[$dir . $locator . '/LOCK'])){ // Windows moves no directory with an open file in it
+                flock($locks[$dir . $locator . '/LOCK'], LOCK_UN);
+                fclose($locks[$dir . $locator . '/LOCK']);
+                unset($locks[$dir . $locator . '/LOCK']);
+            }
             if(is_dir($dir . $locator) && !@rename($dir . $locator, "$runDir/v4/$locator")){
                 throw new Stop('MAINTENANCE_IN_PROGRESS', "cannot move $locator into the backup; run --restore again");
             }
@@ -2052,7 +2108,7 @@ final class Restore {
                 throw $busy ? new Stop('MAINTENANCE_BUSY', basename(dirname($path)) . '/' . basename($path) . ' is locked by another process; nothing was changed')
                     : new Stop('FAILED', "cannot open $path (permissions of the directory?); nothing was changed");
             }
-            $locks[] = $fp;
+            $locks[$path] = $fp;
         }
         return $locks;
     }

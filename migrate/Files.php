@@ -10,6 +10,9 @@ final class Files {
     public const FILE_MODE = 0640;
     public const DIR_MODE = 0750;
 
+    /** The lock handles of the run by file name: on Windows a lock keeps every other handle from reading the file */
+    private static $locked = [];
+
     /**
      * Write a file atomically: a temp file in the same directory, synced, renamed over the target, the directory
      * synced; $mode set on it whatever the umask
@@ -132,11 +135,43 @@ final class Files {
      */
     public static function openLock(string $path) {
         $created = !is_file($path);
-        $fp = @fopen($path, 'c');
+        $fp = @fopen($path, 'c+b');
         if($fp !== false && $created){
             @chmod($path, self::FILE_MODE);
         }
         return $fp;
+    }
+
+    /** The run has this file locked: from now on it is read through this handle */
+    public static function keepLocked(string $path, $fp): void {
+        self::$locked[basename($path)] = $fp;
+    }
+
+    /** The handle of a file the run has locked, at the file's start; null for any other file */
+    private static function lockedHandle(string $path) {
+        $fp = self::$locked[basename($path)] ?? null;
+        if(!is_resource($fp)){
+            return null;
+        }
+        rewind($fp);
+        return $fp;
+    }
+
+    /** SHA-256 of a file */
+    public static function sha256(string $path): string {
+        $fp = self::lockedHandle($path);
+        if($fp === null){
+            return (string)@hash_file('sha256', $path);
+        }
+        $hash = hash_init('sha256');
+        hash_update_stream($hash, $fp);
+        return hash_final($hash);
+    }
+
+    /** The first bytes of a file, '' when it can't be read */
+    public static function head(string $path, int $length): string {
+        $fp = self::lockedHandle($path);
+        return (string)($fp === null ? @file_get_contents($path, false, null, 0, $length) : fread($fp, $length));
     }
 
     /**
@@ -144,10 +179,11 @@ final class Files {
      * @throws Stop
      */
     public static function copy(string $from, string $to, ?int $mode = null): string {
-        $in = @fopen($from, 'rb');
+        $held = self::lockedHandle($from);
+        $in = $held ?? @fopen($from, 'rb');
         $out = $in === false ? false : @fopen($to, 'xb');
         if($in === false || $out === false){
-            if($in !== false){
+            if($in !== false && $held === null){
                 fclose($in);
             }
             throw new Stop('FAILED', "cannot copy $from to $to");
@@ -164,7 +200,9 @@ final class Files {
             $ok = fwrite($out, $chunk) === strlen($chunk);
         }
         $ok = $ok && fflush($out) && self::syncHandle($out);
-        fclose($in);
+        if($held === null){
+            fclose($in);
+        }
         fclose($out);
         if(!$ok){
             throw new Stop('FAILED', "cannot copy $from to $to");

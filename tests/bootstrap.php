@@ -35,9 +35,11 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 // Define test database directory constant (NONEDB_TEST_DB_DIR: another directory, so test runs don't share one)
 $testDbDir = getenv('NONEDB_TEST_DB_DIR');
-define('TEST_DB_DIR', is_string($testDbDir) && $testDbDir !== '' ? rtrim($testDbDir, '/') . '/' : __DIR__ . '/test_db/');
+$testDbDir = is_string($testDbDir) && $testDbDir !== '' ? rtrim($testDbDir, '/') : __DIR__ . '/test_db';
 
 // Create test db directory if not exists
-if (!file_exists(TEST_DB_DIR)) {
-    mkdir(TEST_DB_DIR, 0777, true);
+if (!file_exists($testDbDir)) {
+    mkdir($testDbDir, 0777, true);
 }
+// As the engine resolves it, so that a path of a test is the engine's on every system
+define('TEST_DB_DIR', realpath($testDbDir) . '/');

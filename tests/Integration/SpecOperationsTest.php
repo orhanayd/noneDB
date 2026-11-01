@@ -196,7 +196,8 @@ class SpecOperationsTest extends RegressionTestCase
                     $files[substr($path . $entry, strlen($root)) . '/'] = 'dir';
                     $walk($path . $entry . '/');
                 } else {
-                    $files[substr($path . $entry, strlen($root))] = sha1_file($path . $entry);
+                    // On Windows a lock keeps every other handle from reading the file
+                    $files[substr($path . $entry, strlen($root))] = PHP_OS_FAMILY === 'Windows' && $entry === 'LOCK' ? filesize($path . $entry) : sha1_file($path . $entry);
                 }
             }
         };
@@ -280,7 +281,7 @@ class SpecOperationsTest extends RegressionTestCase
             $out["durability"] = $db->getDurability()["mode"];
             $out["cacheMemoryLimit"] = noneDB\Tests\Support\Testing::get("cacheMemoryLimit");
             echo json_encode($out);');
-        $out = trim((string)shell_exec('cd ' . escapeshellarg($dir) . ' && env -u NONEDB_DEV_MODE ' . escapeshellarg(PHP_BINARY) . ' run.php 2>&1'));
+        $out = trim((string)shell_exec(self::cd($dir) . 'env -u NONEDB_DEV_MODE ' . escapeshellarg(PHP_BINARY) . ' run.php 2>&1'));
         $this->assertSame([
             'autoCreateDB' => true,          // "autoCreateDB | bool | true"
             'shardingEnabled' => true,       // "shardingEnabled | bool | true"
@@ -421,7 +422,7 @@ class SpecOperationsTest extends RegressionTestCase
         $this->assertTrue(\noneDB::configExists());
 
         $db = new \noneDB();
-        $this->assertSame($app . '/data/', $db->__debugInfo()['dbDir'], 'relative to the .nonedb file');
+        $this->assertSame(self::resolvedDir($app . '/data/'), $db->__debugInfo()['dbDir'], 'relative to the .nonedb file');
         $this->assertSame('***', $db->__debugInfo()['secretKey']);
         $this->assertFalse($db->__debugInfo()['devMode']);
         $this->assertSame(7, $db->getShardSize());
@@ -435,7 +436,7 @@ class SpecOperationsTest extends RegressionTestCase
         $merged = new \noneDB(['shardSize' => 9, 'bufferEnabled' => false]);
         $this->assertSame(9, $merged->getShardSize());
         $this->assertFalse($merged->isBufferingEnabled());
-        $this->assertSame($app . '/data/', $merged->__debugInfo()['dbDir']);
+        $this->assertSame(self::resolvedDir($app . '/data/'), $merged->__debugInfo()['dbDir']);
         $this->assertSame(2.0, $this->prop($merged, 'lockTimeout'));
         $this->assertSame([1], array_column($merged->find('fromfile', 0), 'v'), 'same key and directory as the file');
 
@@ -445,7 +446,7 @@ class SpecOperationsTest extends RegressionTestCase
         \noneDB::clearConfigCache();
         $reloaded = new \noneDB();
         $this->assertSame(11, $reloaded->getShardSize());
-        $this->assertSame($app . '/other/', $reloaded->__debugInfo()['dbDir']);
+        $this->assertSame(self::resolvedDir($app . '/other/'), $reloaded->__debugInfo()['dbDir']);
     }
 
     /** @test a .nonedb that isn't a JSON object can't configure anything (unless the array gives secretKey and dbDir) */
@@ -535,7 +536,7 @@ class SpecOperationsTest extends RegressionTestCase
         chdir($root . '/cwd');
         foreach (['store' => $root . '/app/store/', './store/' => $root . '/app/store/', '../shared' => $root . '/shared/'] as $dbDir => $expected) {
             $db = new \noneDB(['secretKey' => self::SECRET, 'dbDir' => $dbDir]);
-            $this->assertSame($expected, $db->__debugInfo()['dbDir'], $dbDir);
+            $this->assertSame(self::resolvedDir($expected), $db->__debugInfo()['dbDir'], $dbDir);
         }
         $db = new \noneDB(['secretKey' => self::SECRET, 'dbDir' => '../shared']);
         $db->insert('rel', ['v' => 1]);
@@ -548,15 +549,15 @@ class SpecOperationsTest extends RegressionTestCase
 
         // Entry script that doesn't exist (any more): its directory still counts; no entry script: the working directory
         $this->entryScriptIn($root . '/app', 'gone.php', false);
-        $this->assertSame($root . '/app/x/', (new \noneDB(['secretKey' => self::SECRET, 'dbDir' => 'x']))->__debugInfo()['dbDir']);
+        $this->assertSame(self::resolvedDir($root . '/app/x/'), (new \noneDB(['secretKey' => self::SECRET, 'dbDir' => 'x']))->__debugInfo()['dbDir']);
         $_SERVER['SCRIPT_FILENAME'] = '';
-        $this->assertSame(getcwd() . '/x/', (new \noneDB(['secretKey' => self::SECRET, 'dbDir' => 'x']))->__debugInfo()['dbDir']);
+        $this->assertSame(self::resolvedDir(getcwd() . '/x/'), (new \noneDB(['secretKey' => self::SECRET, 'dbDir' => 'x']))->__debugInfo()['dbDir']);
 
         // Many different entry scripts in one process (a long-running worker): each resolves on its own
         for ($i = 0; $i < 20; $i++) {
             mkdir($root . "/w$i");
             $this->entryScriptIn($root . "/w$i");
-            $this->assertSame($root . "/w$i/db/", (new \noneDB(['secretKey' => self::SECRET, 'dbDir' => 'db']))->__debugInfo()['dbDir']);
+            $this->assertSame(self::resolvedDir($root . "/w$i/db/"), (new \noneDB(['secretKey' => self::SECRET, 'dbDir' => 'db']))->__debugInfo()['dbDir']);
         }
     }
 
@@ -632,7 +633,7 @@ class SpecOperationsTest extends RegressionTestCase
             $this->removeDirectoryTree($lib . '/db');
             $this->removeDirectoryTree($own);
             file_put_contents($lib . '/run.php', strtr($script, ['PREFIX' => $prefix, 'OWNDIR' => var_export($own . '/', true)]));
-            $out = trim((string)shell_exec('cd ' . escapeshellarg($cwd) . ' && env -u NONEDB_DEV_MODE ' . $env . ' '
+            $out = trim((string)shell_exec(self::cd($cwd) . 'env -u NONEDB_DEV_MODE ' . $env . ' '
                 . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($lib . '/run.php') . ' 2>&1'));
             $this->assertSame([
                 'none' => 'dev ' . $lib . '/db/',
@@ -654,7 +655,7 @@ class SpecOperationsTest extends RegressionTestCase
             $body = $label === 'setDevMode(false)' ? 'noneDB::setDevMode(false); ' : '';
             file_put_contents($lib . '/run.php', '<?php ' . $prefix . ' require __DIR__ . "/noneDB.php"; ' . $body
                 . 'try { new noneDB(); echo "dev"; } catch (Throwable $e) { echo get_class($e), ": ", strtok($e->getMessage(), "\n"); }');
-            $out = trim((string)shell_exec('cd ' . escapeshellarg($cwd) . ' && env -u NONEDB_DEV_MODE ' . $env . ' '
+            $out = trim((string)shell_exec(self::cd($cwd) . 'env -u NONEDB_DEV_MODE ' . $env . ' '
                 . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($lib . '/run.php') . ' 2>&1'));
             $this->assertSame('RuntimeException: noneDB: Configuration file not found!', $out, $label);
         }
@@ -678,7 +679,7 @@ class SpecOperationsTest extends RegressionTestCase
             try { $db = new noneDB(); echo $db->__debugInfo()["dbDir"], " ", $db->__debugInfo()["devMode"] ? "dev" : "file"; }
             catch (Throwable $e) { echo get_class($e); }');
         $run = function (string $env = '') use ($proj, $cwd) {
-            return trim((string)shell_exec('cd ' . escapeshellarg($cwd) . ' && env -u NONEDB_DEV_MODE ' . $env . ' '
+            return trim((string)shell_exec(self::cd($cwd) . 'env -u NONEDB_DEV_MODE ' . $env . ' '
                 . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($proj . '/public/index.php') . ' 2>&1'));
         };
         $write = function (string $dir, string $dbDir) {
@@ -686,12 +687,12 @@ class SpecOperationsTest extends RegressionTestCase
         };
 
         $this->assertSame('RuntimeException', $run(), 'no file anywhere');
-        $this->assertSame($proj . '/db/ dev', $run('DEV=1'), 'dev mode: db/ next to vendor/');
+        $this->assertSame(self::resolvedDir($proj . '/db/') . ' dev', $run('DEV=1'), 'dev mode: db/ next to vendor/');
 
         $write($cwd, 'from-cwd');                  // 4. the working directory
-        $this->assertSame($cwd . '/from-cwd/ file', $run());
+        $this->assertSame(self::resolvedDir($cwd . '/from-cwd/') . ' file', $run());
         $write($proj, 'from-root');                // 3. the Composer project root
-        $this->assertSame($proj . '/from-root/ file', $run());
+        $this->assertSame(self::resolvedDir($proj . '/from-root/') . ' file', $run());
         $write($vendor, 'from-lib');               // 2. noneDB.php's directory
         $this->assertSame($vendor . '/from-lib/ file', $run());
         $write($proj . '/public', 'from-script');  // 1. the entry script's directory
@@ -702,7 +703,7 @@ class SpecOperationsTest extends RegressionTestCase
     /** @test the template is the .nonedb.example next to noneDB.php, null when it isn't there (docs "Configuration Helpers") */
     public function configTemplateIsTheExampleNextToNoneDb(): void
     {
-        $this->assertSame(realpath(dirname(NONEDB_TEST_LIBRARY) . '/.nonedb.example'), \noneDB::getConfigTemplate()); // next to the library that runs
+        $this->assertSame(realpath(dirname(NONEDB_TEST_LIBRARY) . '/.nonedb.example'), realpath(\noneDB::getConfigTemplate())); // next to the library that runs
         $lib = $this->scratch('notemplate');
         copy(__DIR__ . '/../../noneDB.php', $lib . '/noneDB.php');
         $out = trim((string)shell_exec(escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg('require ' . var_export($lib . '/noneDB.php', true)
@@ -941,7 +942,7 @@ class SpecOperationsTest extends RegressionTestCase
             $this->fail('the directory can not exist');
         } catch (\RuntimeException $e) {
             $this->assertStringContainsString('cannot create database directory', $e->getMessage());
-            $this->assertStringContainsString($dir, $e->getMessage());
+            $this->assertStringContainsString(self::resolvedDir($dir), $e->getMessage());
         }
         $this->assertSame('a file, not a directory', file_get_contents($blocker));
     }
@@ -1634,6 +1635,7 @@ class SpecOperationsTest extends RegressionTestCase
      */
     public function lockStateRecordIsSyncedWhenItProtectsData(): void
     {
+        $this->needsDirectorySyncs();
         $this->setStatic('osFamily', 'Linux'); // durable mode's rules, on every platform
         $synced = [];
         $this->setStatic('syncFn', function ($handle, string $kind) use (&$synced) {

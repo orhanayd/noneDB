@@ -9,6 +9,8 @@ use PHPUnit\Framework\TestCase;
  */
 class ConfigurationTest extends TestCase
 {
+    use \noneDB\Tests\Support\Platform;
+
     private $testDbDir;
     private $hadScript = false;
     private $savedScript = null;
@@ -76,7 +78,7 @@ class ConfigurationTest extends TestCase
         $dir = $this->scratch('iso');
         copy(__DIR__ . '/../../noneDB.php', $dir . '/noneDB.php');
         file_put_contents($dir . '/run.php', "<?php\n" . $code);
-        return trim((string)shell_exec('cd ' . escapeshellarg($dir) . ' && env -u NONEDB_DEV_MODE ' . $env . ' '
+        return trim((string)shell_exec(self::cd($dir) . 'env -u NONEDB_DEV_MODE ' . $env . ' '
             . escapeshellarg(PHP_BINARY) . ' run.php 2>&1'));
     }
 
@@ -166,7 +168,7 @@ class ConfigurationTest extends TestCase
         $this->entryScriptIn($script);
         file_put_contents($script . '/.nonedb', json_encode(['secretKey' => 'script-dir-key-0123', 'dbDir' => 'here']));
         $this->assertTrue(\noneDB::configExists());
-        $this->assertSame($script . '/here/', (new \noneDB())->__debugInfo()['dbDir'], 'the file next to the entry script is used');
+        $this->assertSame(self::resolvedDir($script . '/here/'), (new \noneDB())->__debugInfo()['dbDir'], 'the file next to the entry script is used');
 
         // In a process where no file exists anywhere: false; then one in noneDB.php's directory, then in the cwd
         $out = $this->runIsolated('require __DIR__ . "/noneDB.php";
@@ -206,7 +208,7 @@ class ConfigurationTest extends TestCase
         $this->assertArrayHasKey('lockRetryDelay', $template);
 
         // "the .nonedb.example next to noneDB.php" (the library that runs: the test build)
-        $this->assertSame(realpath(dirname(NONEDB_TEST_LIBRARY) . '/.nonedb.example'), $templatePath);
+        $this->assertSame(realpath(dirname(NONEDB_TEST_LIBRARY) . '/.nonedb.example'), realpath($templatePath));
         // Its key is a placeholder: "replace the placeholder secretKey (it is rejected)"
         try {
             new \noneDB(['dbDir' => $this->testDbDir] + $template);
@@ -329,7 +331,7 @@ class ConfigurationTest extends TestCase
         ];
 
         $db = new \noneDB($config);
-        $this->assertSame($dir . '/test_db/', $db->__debugInfo()['dbDir']);
+        $this->assertSame(self::resolvedDir($dir . '/test_db/'), $db->__debugInfo()['dbDir']);
 
         $result = $db->insert('relative-test', ['data' => 'test']);
         $this->assertSame(['n' => 1], $result);
@@ -539,7 +541,7 @@ require __DIR__ . "/noneDB.php";
 try { new noneDB(); echo "NO_EXCEPTION"; }
 catch (RuntimeException $e) { echo get_class($e), ":", $e->getMessage(); }');
 
-        $cmd = 'cd ' . escapeshellarg($tempDir) . ' && env -u NONEDB_DEV_MODE '
+        $cmd = self::cd($tempDir) . 'env -u NONEDB_DEV_MODE '
             . escapeshellarg(PHP_BINARY) . ' run.php 2>&1';
         $output = shell_exec($cmd);
 

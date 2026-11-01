@@ -347,7 +347,7 @@ class MigrationProcessTest extends MigrationTestCase
     public function aSettingNoneDB4DoesNotKnowStopsTheRunFirst(): void
     {
         $dir = $this->stage(self::FIXTURE);
-        $cwd = sys_get_temp_dir() . '/nonedb_migrate_cwd_' . bin2hex(random_bytes(4));
+        $cwd = realpath(sys_get_temp_dir()) . '/nonedb_migrate_cwd_' . bin2hex(random_bytes(4));
         mkdir($cwd);
         try {
             file_put_contents("$cwd/.nonedb", json_encode(['secretKey' => self::TARGET, 'dbDir' => './db/', 'autoMigrate' => true]));

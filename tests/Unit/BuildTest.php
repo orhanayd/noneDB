@@ -137,7 +137,7 @@ class BuildTest extends TestCase
         }
         $classFiles = [];
         foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(self::root() . '/src/Internal', \FilesystemIterator::SKIP_DOTS)) as $file) {
-            $classFiles[] = substr((string)$file, strlen(self::root() . '/src/'));
+            $classFiles[] = str_replace('\\', '/', substr((string)$file, strlen(self::root() . '/src/')));
         }
         $manifest = require self::root() . '/src/manifest.php';
         $listedFiles = $manifest['files'];

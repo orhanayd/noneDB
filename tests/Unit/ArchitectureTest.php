@@ -53,7 +53,7 @@ class ArchitectureTest extends TestCase
 
     private static function relative(string $file): string
     {
-        return substr($file, strlen(self::root()) + 1);
+        return str_replace('\\', '/', substr($file, strlen(self::root()) + 1));
     }
 
     /**

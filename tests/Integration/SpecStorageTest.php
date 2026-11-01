@@ -946,6 +946,7 @@ class SpecStorageTest extends RegressionTestCase
      */
     public function aBufferedInsertWhoseSyncFailsIsRefusedAndUndone(): void
     {
+        $this->needsDirectorySyncs();
         $this->setStatic('osFamily', 'Linux'); // durable mode's rules, on every platform
         $db = $this->db(['bufferEnabled' => true, 'shardingEnabled' => false, 'durability' => 'durable']);
         $db->insert('bf', ['v' => 'a']);

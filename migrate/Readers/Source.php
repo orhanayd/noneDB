@@ -91,7 +91,7 @@ final class Source {
         $lock = $this->path('.nonedb.lock');
         if(is_file($lock)){
             $this->locked = true;
-            $this->epoch = preg_match('/^\d+:[0-9a-f]{8}(?: |$)/', (string)file_get_contents($lock, false, null, 0, 128)) === 1;
+            $this->epoch = preg_match('/^\d+:[0-9a-f]{8}(?: |$)/', \noneDB\Migrate\Files::head($lock, 128)) === 1;
         }
         if(is_file($this->path('.nonedb.meta'))){
             $this->readSharded();

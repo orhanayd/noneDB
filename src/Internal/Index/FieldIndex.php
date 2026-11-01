@@ -8,7 +8,7 @@ use function abs, array_fill_keys, array_flip, array_intersect, array_intersect_
     array_map, array_merge, array_multisort, array_search, array_slice, array_sum, array_unique, array_values,
     basename, bin2hex, chr, clearstatcache, count, end, fclose, fgets, file_exists, file_get_contents, filesize, fopen,
     fread, fseek, fstat, hash, hex2bin, in_array, intdiv, is_array, is_file, is_float, is_int, is_nan, is_null, is_numeric,
-    is_scalar, is_string, json_decode, ksort, max, memory_get_usage, min, preg_match, random_bytes, sort,
+    is_resource, is_scalar, is_string, json_decode, ksort, max, memory_get_usage, min, preg_match, random_bytes, sort,
     str_repeat, strcmp, strlen, strncmp, strpos, substr, time, unpack;
 use const PHP_SAPI, SORT_NUMERIC, SORT_STRING;
 
@@ -1365,13 +1365,20 @@ final class FieldIndex {
                 }
                 yield ShardFilters::seal($rows);
             }
+            fclose($source); // before the rename: Windows doesn't replace a file that is open
         };
+        $damaged = false;
         try {
             $this->writeGlobalFile($dbname, $field, $path, $global['sh'], $global['bits'], $global['width'], $pages());
         } catch(\UnexpectedValueException $e){
-            $this->rebuildGlobalFieldIndex($dbname, $field);
+            $damaged = true;
         } finally {
-            fclose($source);
+            if(is_resource($source)){
+                fclose($source);
+            }
+        }
+        if($damaged){
+            $this->rebuildGlobalFieldIndex($dbname, $field);
         }
     }
 

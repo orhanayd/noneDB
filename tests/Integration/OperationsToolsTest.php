@@ -28,6 +28,7 @@ class OperationsToolsTest extends RegressionTestCase
     /** @test DURABILITY.md §6: the report says what the last write needed and did, in each mode */
     public function durabilityReportDescribesWhatWasDone(): void
     {
+        $this->needsDirectorySyncs();
         $db = $this->db();
         $report = $db->getDurability();
         $this->assertSame(['mode', 'platform', 'lastOperation', 'lastSyncError', 'syncs'], array_keys($report));
@@ -56,6 +57,7 @@ class OperationsToolsTest extends RegressionTestCase
     /** @test DURABILITY.md §3: a dbDir the first write creates is synced into its parent like any new directory */
     public function aDatabaseDirectoryCreatedByTheFirstWriteIsSynced(): void
     {
+        $this->needsDirectorySyncs();
         // dbDir is used by its canonical path (STORAGE_FORMAT.md §3): the temp directory may be a link (macOS)
         $parent = realpath(sys_get_temp_dir()) . '/nonedb-dirsync-' . bin2hex(random_bytes(6));
         $dir = $parent . '/db/';
@@ -86,6 +88,7 @@ class OperationsToolsTest extends RegressionTestCase
     /** @test DURABILITY.md §2: a failed sync fails the write (never success), and is never carried over */
     public function aFailedSyncIsReportedAndNeverCarriedOver(): void
     {
+        $this->needsDirectorySyncs();
         $this->setStatic('osFamily', 'Linux');
         $db = $this->db(['durability' => 'durable']);
         $db->insert('sf', ['v' => 1]);

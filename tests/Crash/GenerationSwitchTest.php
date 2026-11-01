@@ -113,8 +113,8 @@ class GenerationSwitchTest extends RegressionTestCase
      */
     public function anObsoleteGenerationThatCannotBeRemovedIsLoggedAndReported(): void
     {
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-            $this->markTestSkipped('root ignores file permissions');
+        if (PHP_OS_FAMILY === 'Windows' || (function_exists('posix_geteuid') && posix_geteuid() === 0)) {
+            $this->markTestSkipped('no permissions that keep an entry from being removed');
         }
         $this->assertSame('', $this->interruptSwitchAt('generation:published'));
         $this->assertContains('g=1>2', $this->lockState('m')['flags']);

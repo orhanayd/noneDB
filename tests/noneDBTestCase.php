@@ -11,6 +11,8 @@ use PHPUnit\Framework\TestCase;
  */
 abstract class noneDBTestCase extends TestCase
 {
+    use \noneDB\Tests\Support\Platform;
+
     /**
      * @var \noneDB
      */
@@ -68,6 +70,14 @@ abstract class noneDBTestCase extends TestCase
         $this->cleanTestDirectory();
 
         parent::tearDown();
+    }
+
+    /** For a test of durable mode under another platform's name: no directory can be synced on Windows */
+    protected function needsDirectorySyncs(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('durable mode needs directory syncs');
+        }
     }
 
     /**

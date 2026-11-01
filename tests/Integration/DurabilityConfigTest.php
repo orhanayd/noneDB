@@ -123,6 +123,7 @@ class DurabilityConfigTest extends RegressionTestCase
     /** @test §6: lastOperation of a committed write, in both modes */
     public function aCommittedWriteIsReported(): void
     {
+        $this->needsDirectorySyncs();
         $db = $this->db();
         $db->insert('rep', ['v' => 1]);
         $last = $db->getDurability()['lastOperation'];
@@ -186,6 +187,7 @@ class DurabilityConfigTest extends RegressionTestCase
     /** @test §6: "Paths are relative to dbDir. No key material appears." */
     public function theLastSyncErrorHasNoAbsolutePathAndNoKey(): void
     {
+        $this->needsDirectorySyncs();
         $this->onPlatform('Linux');
         $db = $this->db(['durability' => 'durable']);
         $db->insert('err', ['v' => 1]);
@@ -223,6 +225,7 @@ class DurabilityConfigTest extends RegressionTestCase
     /** @test maintenance takes the same durability option (docs/DURABILITY.md §1) */
     public function maintenanceTakesTheDurabilityOption(): void
     {
+        $this->needsDirectorySyncs();
         $this->db()->insert('m', ['v' => 1]);
         $other = 'second_registered_key_0123';
         $this->onPlatform('Darwin');

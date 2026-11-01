@@ -130,7 +130,7 @@ class SecurityConfigRegressionTest extends RegressionTestCase
         $php = escapeshellarg(PHP_BINARY);
         $web = trim(shell_exec("$php " . escapeshellarg("$p/public/index.php") . ' 2>&1'));
         $cron = trim(shell_exec("$php " . escapeshellarg("$p/bin/cron.php") . ' 2>&1'));
-        $fromParent = trim(shell_exec('cd ' . escapeshellarg($p) . " && $php bin/cron.php 2>&1"));
+        $fromParent = trim(shell_exec(self::cd($p) . "$php bin/cron.php 2>&1"));
         $mixed = trim(shell_exec("$php " . escapeshellarg("$p/bin/mixed.php") . ' 2>&1'));
         $this->assertSame('[{"from":"web","key":0}]', $web);
         $this->assertSame($web, $cron, 'web and cron share one database');
@@ -155,13 +155,13 @@ class SecurityConfigRegressionTest extends RegressionTestCase
         // Array config: relative to the entry script (bin/), not to the working directory
         file_put_contents("$p/bin/array.php", '<?php require __DIR__."/../noneDB.php"; $db = new noneDB(["secretKey" => "other-key-123", "dbDir" => "store/"]); $db->insert("a", ["x" => 1]); echo "ok";');
         $php = escapeshellarg(PHP_BINARY);
-        $web = trim(shell_exec('cd ' . escapeshellarg("$p/public") . " && $php index.php 2>&1"));
-        $cron = trim(shell_exec('cd ' . escapeshellarg(sys_get_temp_dir()) . " && $php " . escapeshellarg("$p/bin/cron.php") . ' 2>&1'));
+        $web = trim(shell_exec(self::cd("$p/public") . "$php index.php 2>&1"));
+        $cron = trim(shell_exec(self::cd(sys_get_temp_dir()) . "$php " . escapeshellarg("$p/bin/cron.php") . ' 2>&1'));
         $this->assertSame('[{"from":"web","key":0}]', $web);
         $this->assertSame($web, $cron, 'a cwd elsewhere does not matter');
         $this->assertSame([$p . '/data/' . $this->locatorOf('orders', 's3cr3t-long-random') . '.ndb4'], glob("$p/data/*.ndb4"));
         $this->assertSame([], glob("$p/public/data") ?: []);
-        $this->assertSame('ok', trim(shell_exec('cd ' . escapeshellarg($p) . " && $php bin/array.php 2>&1")));
+        $this->assertSame('ok', trim(shell_exec(self::cd($p) . "$php bin/array.php 2>&1")));
         $this->assertSame([$p . '/bin/store/' . $this->locatorOf('a', 'other-key-123') . '.ndb4'], glob("$p/bin/store/*.ndb4"));
         $this->assertSame([], glob("$p/store") ?: []);
     }
@@ -183,7 +183,7 @@ class SecurityConfigRegressionTest extends RegressionTestCase
         // Dev mode: an invalid key is not silently replaced by the predictable dev mode key.
         foreach (['' => 'NOKEY:RuntimeException', 'define("NONEDB_DEV_MODE", true);' => 'NOKEY:dev'] as $prefix => $noKey) {
             file_put_contents("$dir/run.php", sprintf($script, $prefix));
-            $out = trim((string)shell_exec('cd ' . escapeshellarg($dir) . ' && env -u NONEDB_DEV_MODE ' . escapeshellarg(PHP_BINARY) . ' run.php 2>&1'));
+            $out = trim((string)shell_exec(self::cd($dir) . 'env -u NONEDB_DEV_MODE ' . escapeshellarg(PHP_BINARY) . ' run.php 2>&1'));
             $this->assertSame("REJECTED REJECTED REJECTED $noKey", $out, $prefix === '' ? 'no config file' : 'dev mode');
         }
     }
@@ -281,7 +281,7 @@ class SecurityConfigRegressionTest extends RegressionTestCase
         copy(__DIR__ . '/../../noneDB.php', "$dir/noneDB.php");
         file_put_contents("$dir/run.php", '<?php define("NONEDB_DEV_MODE", true); require __DIR__."/noneDB.php";
             $a = new noneDB(); $b = new noneDB(); $b->insert("t", ["a" => 1]); echo count($a->find("t", 0));');
-        $out = trim(shell_exec('cd ' . escapeshellarg(sys_get_temp_dir()) . ' && env -u NONEDB_DEV_MODE ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg("$dir/run.php") . ' 2>&1'));
+        $out = trim(shell_exec(self::cd(sys_get_temp_dir()) . 'env -u NONEDB_DEV_MODE ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg("$dir/run.php") . ' 2>&1'));
         $this->assertSame('1', $out);
         $databases = glob("$dir/db/*.ndb4");
         $this->assertCount(1, $databases, 'data next to noneDB.php, not in the working directory');

@@ -286,7 +286,7 @@ class BoundedMemoryTest extends RegressionTestCase
         unset($db);
         \noneDB::clearStaticCache();
         $batch = self::batchBytes();
-        $maps = self::LARGE * self::TWO_MAPS;
+        $maps = self::LARGE * self::TWO_MAPS + 2 * 1048576; // and what differs between systems
         // A flat list costs 32 bytes per entry on PHP 8.1, 16 later (60 000 entries: 2.1 and 1.05 MB): a range's ids, strings and bucket ids
         $lists = PHP_VERSION_ID < 80200 ? 3 * 16 * self::LARGE : 0;
         $steps = [
