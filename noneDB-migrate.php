@@ -2248,19 +2248,25 @@ TXT;
         }
         $real = realpath($dir);
         $backup = rtrim($o['backup-dir'], '/') . '/';
-        if($real === false || strncmp(self::absolute($backup), $real . '/', strlen($real) + 1) === 0){
+        if($real === false || strncmp(self::absolute($backup), self::comparable($real) . '/', strlen($real) + 1) === 0){
             throw new Stop('FAILED', '--backup-dir must be outside --dir');
         }
         return ['migrated' => Migration::run($dir, $source, $target, $options + ['backupDir' => $backup])];
     }
 
-    /** A path made absolute without requiring it to exist */
+    /** A path made absolute without requiring it to exist, to compare */
     private static function absolute(string $path): string {
         $real = realpath($path);
         if($real !== false){
-            return $real . '/';
+            return self::comparable($real) . '/';
         }
-        return ($path[0] === '/' ? '' : getcwd() . '/') . $path;
+        $path = self::comparable($path);
+        return preg_match('~^([a-z]:)?/~i', $path) === 1 ? $path : self::comparable((string)getcwd()) . '/' . $path;
+    }
+
+    /** A path as paths of the system compare: on Windows / and \ are one and case doesn't count */
+    private static function comparable(string $path): string {
+        return DIRECTORY_SEPARATOR === '\\' ? strtolower(str_replace('\\', '/', $path)) : $path;
     }
 
     private static function output(bool $json, array $result): void {

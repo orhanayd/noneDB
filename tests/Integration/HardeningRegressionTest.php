@@ -348,6 +348,7 @@ class HardeningRegressionTest extends RegressionTestCase
             $this->assertTrue($db->dropDB('g')['success']);
             $this->assertSame([], $this->filesOf('g', $dir));
         } finally {
+            \noneDB::clearStaticCache(); // its lock handles: Windows removes no directory with an open file in it
             $remove = function (string $path) use (&$remove) {
                 if (is_dir($path) && !is_link($path)) {
                     foreach (scandir($path) as $entry) {

@@ -70,6 +70,9 @@ class LockEpochTest extends RegressionTestCase
     /** @test */
     public function aRecreatedLockFileNeverValidatesAnOldCache(): void
     {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('a file that is open keeps its name until it is closed: no new LOCK while this process has one');
+        }
         $db = $this->db(['shardingEnabled' => false]);
         $db->insert('epo', [['n' => 0], ['n' => 1]]);
         $db->insert('epo', ['n' => 2]); // a generation the child can reach again however a new lock file starts

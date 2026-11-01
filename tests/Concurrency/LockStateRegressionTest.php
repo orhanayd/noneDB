@@ -50,7 +50,13 @@ class LockStateRegressionTest extends RegressionTestCase
     private function rawRecord(string $dbName): string
     {
         clearstatcache();
-        return (string)file_get_contents($this->dbPath($dbName, 'lock'));
+        $path = $this->dbPath($dbName, 'lock');
+        $held = \noneDB\Tests\Support\Testing::get('lockHandles')[$path]['fp'] ?? null;
+        if (PHP_OS_FAMILY === 'Windows' && is_resource($held)) {
+            rewind($held); // a lock keeps every other handle from reading the file
+            return (string)fread($held, 8192);
+        }
+        return (string)file_get_contents($path);
     }
 
     /** Name of the database (of $names) a file belongs to */
@@ -140,8 +146,7 @@ class LockStateRegressionTest extends RegressionTestCase
         $states = [];
         $this->setFaultHook(function ($point) use (&$states) {
             if ($point === 'append:after') {
-                clearstatcache();
-                $states[] = (string)file_get_contents($this->dbPath('many', 'lock'));
+                $states[] = $this->rawRecord('many');
             }
         });
         // keys 2-121: shards 1-60; "j=s1,s2,...,s60" alone is 232 bytes
@@ -250,6 +255,9 @@ class LockStateRegressionTest extends RegressionTestCase
     /** @test the path is locked, not a deleted file a kept handle still points to */
     public function replacedLockFileIsNotTrusted(): void
     {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('a file that is open keeps its name until it is closed: no new LOCK while this process has one');
+        }
         $db = $this->db(['lockTimeout' => 1]);
         $db->insert('rl', ['a' => 1]);           // the lock handle stays open in this process
         $lock = $this->dbPath('rl', 'lock');

@@ -687,7 +687,7 @@ class SpecOperationsTest extends RegressionTestCase
         };
 
         $this->assertSame('RuntimeException', $run(), 'no file anywhere');
-        $this->assertSame(self::resolvedDir($proj . '/db/') . ' dev', $run('DEV=1'), 'dev mode: db/ next to vendor/');
+        $this->assertSame($proj . '/db/ dev', $run('DEV=1'), 'dev mode: db/ next to vendor/');
 
         $write($cwd, 'from-cwd');                  // 4. the working directory
         $this->assertSame(self::resolvedDir($cwd . '/from-cwd/') . ' file', $run());

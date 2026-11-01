@@ -550,6 +550,7 @@ class MigrationProcessTest extends MigrationTestCase
             $this->assertSame(0, $status, "$stop, run again: $stdout");
             $this->assertMigrated($dir, "$stop, run again");
             $run = $out['migrated']['run'];
+            \noneDB::clearStaticCache(); // assertMigrated() read it here: Windows moves no directory with an open file in it
             [$status, $out, $stdout] = $this->tool(["--dir=$dir", '--backup-dir=' . $this->testDbDir . 'backup/', "--restore=$run"], $this->key());
             $this->assertSame(0, $status, "$stop, restore: $stdout");
             $this->assertSame($before, $this->snapshot($dir), "$stop: restored byte for byte, STORE.LOCK gone");

@@ -548,7 +548,8 @@ class RollbackScopeTest extends RegressionTestCase
      */
     public function rollbackOfAFileReplacedOrRemovedMeanwhileFails(): void
     {
-        foreach (['replaced', 'removed'] as $what) {
+        // Windows replaces no file that is open
+        foreach (PHP_OS_FAMILY === 'Windows' ? ['removed'] : ['replaced', 'removed'] as $what) {
             $this->cleanTestDirectory();
             $db = $this->db(['shardingEnabled' => false]);
             $db->insert('gone', ['v' => 'base']);
