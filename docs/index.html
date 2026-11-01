@@ -243,7 +243,7 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
     <section class="hero">
         <div class="hero-bg"></div>
         <div class="container">
-            <div class="hero-badge"><span class="badge-dot"></span>v3.2 - Multi-process safe &amp; crash-safe</div>
+            <div class="hero-badge"><span class="badge-dot"></span>v4.0 - Crash-safe writes, backups &amp; a verified storage format</div>
             <h1 class="hero-title">The <span class="gradient-text">Zero-Dependency</span><br>Database for PHP</h1>
             <p class="hero-subtitle">Not every project needs a database server.<br>For small to mid-scale applications, noneDB delivers the performance you need<br>without the infrastructure overhead.</p>
             <div class="hero-cta">
@@ -257,11 +257,11 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
                 </a>
             </div>
             <div class="hero-stats">
-                <div class="stat"><span class="stat-value">~9K</span><span class="stat-label">Lines of Code</span></div>
+                <div class="stat"><span class="stat-value">1</span><span class="stat-label">File to Include</span></div>
                 <div class="stat-divider"></div>
                 <div class="stat"><span class="stat-value">0</span><span class="stat-label">Dependencies</span></div>
                 <div class="stat-divider"></div>
-                <div class="stat"><span class="stat-value">O(1)</span><span class="stat-label">Key Lookup</span></div>
+                <div class="stat"><span class="stat-value">0.05 ms</span><span class="stat-label">Key Lookup</span></div>
             </div>
         </div>
     </section>
@@ -272,15 +272,15 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
             <div class="features-grid">
                 <div class="feature-card">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
-                    <h3>Blazing Fast</h3><p>O(1) key lookups with JSONL byte-offset indexing. Static cache sharing across instances.</p>
+                    <h3>Fast by Design</h3><p>Key-index checkpoints and paged field indexes: a lookup reads only the pages it needs. Indexes stay cached within a memory limit you set.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div>
-                    <h3>Auto-Sharding</h3><p>Automatically splits large datasets into shards for optimal performance at scale.</p>
+                    <h3>Scales to Millions</h3><p>Automatic sharding (10,000 records per shard by default) and bounded memory: 10 million records answer queries in a 512 MiB process.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
-                    <h3>Multi-Process Safe</h3><p>Database-level locking, atomic file replacement and self-healing indexes: no lost updates, even when a process is killed mid-write.</p>
+                    <h3>Crash-Safe</h3><p>Locks across processes, failed writes rolled back, and a killed process loses no acknowledged write. Durable mode survives a power loss (Linux); backups are consistent.</p>
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg></div>
@@ -292,7 +292,7 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
-                    <h3>Secure by Default</h3><p>PBKDF2 hashed filenames. No external exposure of database structure.</p>
+                    <h3>Keys and Permissions</h3><p>Only the keys registered for a store open it; directory names are HMACs of the names. Files are 0640. Data is not encrypted: keep the directory outside the web root.</p>
                 </div>
             </div>
         </div>
@@ -309,7 +309,7 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
                 <div class="use-case"><span class="use-case-icon">📊</span><h4>Analytics & Logs</h4><p>Event tracking, activity logs</p></div>
                 <div class="use-case"><span class="use-case-icon">🗺️</span><h4>Location Apps</h4><p>Store locators, geo-based features</p></div>
             </div>
-            <div class="perfect-for-note"><p><strong>10K+ records?</strong> No problem. Auto-sharding keeps performance consistent as your data grows.</p></div>
+            <div class="perfect-for-note"><p><strong>10K+ records?</strong> Auto-sharding keeps the files small, and a key lookup takes about 0.05 ms from 1,000 to 100,000 records.</p></div>
         </div>
     </section>
 
@@ -329,7 +329,7 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
                     </button>
                 </div>
             </div>
-            <p class="install-note">Requires PHP 7.4+ • No extensions needed • Works on any hosting</p>
+            <p class="install-note">Requires PHP 8.1+ (64-bit) • No extra extensions • Local file system</p>
         </div>
     </section>
 
@@ -344,7 +344,7 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
                 </div>
                 <div class="code-panels">
                     <div class="code-panel active" id="basic">
-                        <pre><code><span class="comment">// Initialize</span>
+                        <pre><code><span class="comment">// Initialize (reads the .nonedb config file)</span>
 <span class="variable">$db</span> = <span class="keyword">new</span> <span class="class">noneDB</span>();
 
 <span class="comment">// Create</span>
@@ -417,7 +417,10 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
                     <a href="https://github.com/orhanayd/noneDB/blob/master/docs/QUERY.md" target="_blank" class="doc-link"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg><span>Query Builder</span></a>
                     <a href="https://github.com/orhanayd/noneDB/blob/master/docs/SPATIAL.md" target="_blank" class="doc-link"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg><span>Spatial Queries</span></a>
                     <a href="https://github.com/orhanayd/noneDB/blob/master/docs/CONFIGURATION.md" target="_blank" class="doc-link"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg><span>Configuration</span></a>
-                    <a href="https://github.com/orhanayd/noneDB/blob/master/docs/BENCHMARKS.md" target="_blank" class="doc-link"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg><span>Benchmarks</span></a>
+                    <a href="https://github.com/orhanayd/noneDB/blob/master/docs/PERFORMANCE.md" target="_blank" class="doc-link"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg><span>Performance</span></a>
+                    <a href="https://github.com/orhanayd/noneDB/blob/master/docs/MIGRATION.md" target="_blank" class="doc-link"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg><span>Migrating to 4.0</span></a>
+                    <a href="https://github.com/orhanayd/noneDB/blob/master/docs/BACKUP_RESTORE.md" target="_blank" class="doc-link"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg><span>Backup &amp; Restore</span></a>
+                    <a href="https://github.com/orhanayd/noneDB/blob/master/docs/OPERATIONS.md" target="_blank" class="doc-link"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg><span>Operations</span></a>
                 </div>
             </div>
         </div>
@@ -449,14 +452,12 @@ body { font-family: var(--font-sans); background: var(--bg); color: var(--text);
                     <div class="footer-col">
                         <h4>Resources</h4>
                         <a href="https://github.com/orhanayd/noneDB#readme" target="_blank">Documentation</a>
-                        <a href="https://github.com/orhanayd/noneDB/blob/master/CHANGELOG.md" target="_blank">Changelog</a>
-                        <a href="https://github.com/orhanayd/noneDB/blob/master/CLAUDE.md" target="_blank">AI Guide</a>
+                        <a href="https://github.com/orhanayd/noneDB/blob/master/CHANGES.md" target="_blank">Changelog</a>
                     </div>
                     <div class="footer-col">
                         <h4>Community</h4>
                         <a href="https://github.com/orhanayd/noneDB" target="_blank">GitHub</a>
                         <a href="https://github.com/orhanayd/noneDB/issues" target="_blank">Issues</a>
-                        <a href="https://github.com/orhanayd/noneDB/discussions" target="_blank">Discussions</a>
                     </div>
                 </div>
             </div>

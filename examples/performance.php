@@ -1,10 +1,14 @@
 <?php
 /**
- * noneDB Performance Benchmark
- * Tests various operations with different dataset sizes
+ * noneDB Performance Example
+ * Times common operations at a few dataset sizes. The measurements in docs/PERFORMANCE.md come from
+ * tests/Performance/perf_gate.php, tests/Performance/large.php and tests/Performance/sqlite_comparison.php.
  */
 
 require __DIR__ . '/_bootstrap.php';
+
+// The generated records and the results of find(all) are held in memory at the same time
+ini_set('memory_limit', '-1');
 
 $db = exampleDb();
 $testDb = 'perf-test-' . time(); // database names: letters, digits, space, ' and - only
@@ -35,11 +39,11 @@ function getFileSize($db, $dbName) {
     return is_array($info) ? $info['size'] : '-';
 }
 
-// Sizes to test: php performance.php 100,1000   (default: up to 100K records)
-$sizes = isset($argv[1]) ? array_map('intval', explode(',', $argv[1])) : [100, 1000, 10000, 50000, 100000];
+// Sizes to test: php performance.php 100,1000,100000   (default: 100, 1K and 10K records)
+$sizes = isset($argv[1]) ? array_map('intval', explode(',', $argv[1])) : [100, 1000, 10000];
 $results = [];
 
-echo "=== noneDB Performance Benchmark ===\n\n";
+echo "=== noneDB Performance Example ===\n\n";
 echo "PHP Version: " . PHP_VERSION . "\n";
 echo "Platform: " . PHP_OS . "\n";
 echo "Date: " . date('Y-m-d H:i:s') . "\n\n";
@@ -172,7 +176,7 @@ foreach ($sizes as $size) {
     $results[$size]['exists'] = $r['time'];
     echo "exists(): " . formatTime($r['time']) . "\n";
 
-    // ========== NEW v2.1 METHODS ==========
+    // ========== QUERY BUILDER ==========
 
     // whereIn
     $r = benchmark(function() use ($db, $dbName) {
@@ -256,7 +260,7 @@ foreach ($sizes as $size) {
 
 // ========== PRINT MARKDOWN TABLES ==========
 
-echo "\n=== MARKDOWN TABLES FOR README ===\n\n";
+echo "\n=== MARKDOWN TABLES ===\n\n";
 
 echo "### Write Operations\n";
 echo "| Operation | " . implode(' | ', array_map(function($s) { return $s >= 1000 ? ($s/1000).'K' : $s; }, $sizes)) . " |\n";
@@ -291,12 +295,11 @@ foreach (['count', 'distinct', 'sum', 'like', 'between', 'sort', 'first', 'exist
     echo "\n";
 }
 
-echo "\n### Method Chaining (v2.1)\n";
+echo "\n### Query Builder\n";
 echo "| Operation | " . implode(' | ', array_map(function($s) { return $s >= 1000 ? ($s/1000).'K' : $s; }, $sizes)) . " |\n";
 echo "|-----------|" . str_repeat("------|", count($sizes)) . "\n";
-foreach (['whereIn', 'orWhere', 'search', 'groupBy', 'select', 'complex_chain' => 'complex chain'] as $key => $label) {
-    if (is_int($key)) { $key = $label; }
-    echo "| {$label}() | ";
+foreach (['whereIn' => 'whereIn()', 'orWhere' => 'orWhere()', 'search' => 'search()', 'groupBy' => 'groupBy()', 'select' => 'select()', 'complex_chain' => 'complex chain'] as $key => $label) {
+    echo "| {$label} | ";
     foreach ($sizes as $size) {
         echo formatTime($results[$size][$key]) . " | ";
     }

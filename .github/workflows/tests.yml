@@ -7,24 +7,74 @@ on:
     branches: [main, master, dev]
 
 jobs:
+  fixtures:
+    # The databases the earlier releases write themselves: the Migration suite reads them, git keeps none
+    name: Migration fixtures
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code with its history (the earlier releases come from git)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup PHP 7.4 (releases before 3.2)
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          extensions: json, mbstring, posix
+          coverage: none
+
+      - name: Keep its path
+        run: echo "NONEDB_PHP74=$(php -r 'echo PHP_BINARY;')" >> $GITHUB_ENV
+
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: json, mbstring, posix
+          coverage: none
+
+      - name: Make the fixtures
+        run: php tools/make-migration-fixtures.php
+
+      - name: Pack them (dot files included, bytes as written)
+        run: tar -czf migration-fixtures.tgz -C tests/Migration fixtures
+
+      - name: Hand them to the other jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-fixtures
+          path: migration-fixtures.tgz
+          retention-days: 1
+
   test:
     name: PHP ${{ matrix.php-version }}
+    needs: fixtures
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        php-version: ['7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
+        php-version: ['8.1', '8.2', '8.3', '8.4', '8.5']
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Get the migration fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: migration-fixtures
+
+      - name: Unpack them
+        run: tar -xzf migration-fixtures.tgz -C tests/Migration
+
       - name: Setup PHP ${{ matrix.php-version }}
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
-          extensions: json, mbstring
+          extensions: json, mbstring, posix, pdo_sqlite
           tools: composer:v2
           coverage: none
 
@@ -46,8 +96,22 @@ jobs:
       - name: Install dependencies
         run: composer install --prefer-dist --no-progress --no-interaction
 
-      - name: Run PHPUnit tests (Unit, Feature, Integration, Regression)
+      - name: Check that noneDB.php is the build of src/
+        run: php tools/build.php --check
+
+      - name: Run PHPUnit (Unit, Integration, Crash, Concurrency, Differential, Migration)
         run: vendor/bin/phpunit --testdox --colors=always
+
+      - name: Run the examples of the documentation against noneDB.php
+        run: php tests/Docs/doctest.php
+
+      - name: Run the SQLite comparison once (a smoke test, no timing is checked)
+        run: php tests/Performance/sqlite_comparison.php 100 --runs=1
+
+      - name: Run the standalone smoke checks
+        run: |
+          php tests/Smoke/noneDB_regression_smoke.php
+          php tests/Smoke/noneDB_critical_scope_regression.php
 
       - name: Run the examples (each must finish without warnings)
         run: |
@@ -56,6 +120,55 @@ jobs:
             out=$(php -d error_reporting=E_ALL -d display_errors=1 "$f" 2>&1) || { echo "$out"; exit 1; }
             if echo "$out" | grep -qiE "warning|notice|deprecated|fatal|uncaught"; then echo "$f:"; echo "$out"; exit 1; fi
           done
+
+      - name: Cleanup test databases
+        if: always()
+        run: rm -rf tests/test_db examples/db
+
+  windows:
+    # Windows (file locking, rename retries): informational until it has been seen green
+    name: PHP ${{ matrix.php-version }} (Windows)
+    needs: fixtures
+    runs-on: windows-latest
+    continue-on-error: true
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php-version: ['8.2', '8.4']
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get the migration fixtures
+        uses: actions/download-artifact@v4
+        with:
+          name: migration-fixtures
+
+      - name: Unpack them
+        run: tar -xzf migration-fixtures.tgz -C tests/Migration
+
+      - name: Setup PHP ${{ matrix.php-version }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: json, mbstring
+          tools: composer:v2
+          coverage: none
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Check that noneDB.php is the build of src/
+        run: php tools/build.php --check
+
+      - name: Run PHPUnit tests
+        run: vendor/bin/phpunit --colors=always
 
       - name: Cleanup test databases
         if: always()

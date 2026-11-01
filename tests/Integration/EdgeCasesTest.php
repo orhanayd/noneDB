@@ -41,7 +41,7 @@ class EdgeCasesTest extends noneDBTestCase
         $result = $this->noneDB->find($dbName, 0);
 
         // Data should be stored as-is (JSON, not SQL)
-        $this->assertEquals("'; DROP TABLE users; --", $result[0]['name']);
+        $this->assertSame([$maliciousData + ['key' => 0]], $result);
     }
 
     /**
@@ -60,7 +60,7 @@ class EdgeCasesTest extends noneDBTestCase
         $result = $this->noneDB->find($dbName, 0);
 
         // Data stored as-is (output encoding is app responsibility)
-        $this->assertEquals('<script>alert("XSS")</script>', $result[0]['content']);
+        $this->assertSame([$xssData + ['key' => 0]], $result);
     }
 
     /**
@@ -68,6 +68,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function pathTraversalAttemptInDBName(): void
     {
+        $before = scandir($this->testDbDir);
         try {
             $this->noneDB->createDB('../../../etc/passwd');
             $this->fail('Expected InvalidArgumentException');
@@ -77,7 +78,8 @@ class EdgeCasesTest extends noneDBTestCase
 
         // Nothing created outside (or inside) the db directory
         $this->assertFileDoesNotExist('/etc/passwd.json');
-        $this->assertSame([], glob($this->testDbDir . '*passwd*'));
+        clearstatcache();
+        $this->assertSame($before, scandir($this->testDbDir));
     }
 
     /**
@@ -98,7 +100,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function unicodeInDatabaseName(): void
     {
-        // v3.2.0: non-ASCII names are rejected instead of being stripped (stripping let names collide)
+        // Non-ASCII names are rejected, never stripped (stripping would let names collide)
         try {
             $this->noneDB->createDB('veritabanı_测试_データ');
             $this->fail('Expected InvalidArgumentException');
@@ -106,7 +108,7 @@ class EdgeCasesTest extends noneDBTestCase
             $this->assertStringContainsString('invalid database name', $e->getMessage());
         }
 
-        // 'çalışan' used to be stripped to 'alan' and write into that database; now it is rejected
+        // Stripped, 'çalışan' would become 'alan' and write into that database: it is rejected
         $this->noneDB->insert('alan', ['tip' => 'alan']);
         try {
             $this->noneDB->insert('çalışan', ['tip' => 'çalışan']);
@@ -136,9 +138,7 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $unicodeData);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertEquals('Türkçe karakterler: ğüşıöç', $result[0]['turkish']);
-        $this->assertEquals('中文字符', $result[0]['chinese']);
-        $this->assertEquals('😀🎉🚀💻', $result[0]['emoji']);
+        $this->assertSame([$unicodeData + ['key' => 0]], $result, 'every string byte for byte');
     }
 
     /**
@@ -159,8 +159,8 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertEquals('value1', $result[0]['field-with-dash']);
-        $this->assertEquals('value4', $result[0]['field with space']);
+        $this->assertSame([$data + ['key' => 0]], $result);
+        $this->assertSame([0], array_column($this->noneDB->find($dbName, ['field.with.dot' => 'value2']), 'key'), 'a dot is part of the name, not a path');
     }
 
     // ==========================================
@@ -179,6 +179,9 @@ class EdgeCasesTest extends noneDBTestCase
         $result = $this->noneDB->createDB($longName);
 
         $this->assertTrue($result);
+        $this->assertFalse($this->noneDB->createDB($longName), 'docs/API.md: false when it already exists');
+        $this->assertSame(['n' => 1], $this->noneDB->insert($longName, ['v' => 1]));
+        $this->assertSame([['v' => 1, 'key' => 0]], $this->noneDB->find($longName, 0));
     }
 
     /**
@@ -194,7 +197,7 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertEquals('value', $result[0][$longFieldName]);
+        $this->assertSame([[$longFieldName => 'value', 'key' => 0]], $result);
     }
 
     /**
@@ -210,7 +213,7 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertEquals(1000000, strlen($result[0]['content']));
+        $this->assertSame($longValue, $result[0]['content']);
     }
 
     /**
@@ -229,8 +232,7 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $nested);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertEquals(1, $result[0]['level']);
-        $this->assertEquals(2, $result[0]['child']['level']);
+        $this->assertSame([$nested + ['key' => 0]], $result, 'all ten levels');
     }
 
     /**
@@ -238,7 +240,7 @@ class EdgeCasesTest extends noneDBTestCase
      */
     public function emptyStringDatabaseName(): void
     {
-        // v3.2.0: an empty name is invalid; checkDB() reports false, other operations throw
+        // An empty name is invalid; checkDB() reports false, other operations throw
         $this->assertFalse($this->noneDB->checkDB(''));
         $this->expectException(\InvalidArgumentException::class);
         $this->noneDB->createDB('');
@@ -254,7 +256,7 @@ class EdgeCasesTest extends noneDBTestCase
 
         $result = $this->noneDB->find('12345', 0);
 
-        $this->assertCount(1, $result);
+        $this->assertSame([['data' => 'test', 'key' => 0]], $result);
     }
 
     // ==========================================
@@ -278,8 +280,9 @@ class EdgeCasesTest extends noneDBTestCase
         $trueResult = $this->noneDB->find($dbName, ['flag' => true]);
         $falseResult = $this->noneDB->find($dbName, ['flag' => false]);
 
-        $this->assertCount(1, $trueResult);
-        $this->assertCount(1, $falseResult);
+        $this->assertSame([['flag' => true, 'key' => 0]], $trueResult);
+        $this->assertSame([['flag' => false, 'key' => 1]], $falseResult);
+        $this->assertSame([], $this->noneDB->find($dbName, ['flag' => 1]), 'identical (===) comparison');
     }
 
     /**
@@ -302,9 +305,9 @@ class EdgeCasesTest extends noneDBTestCase
         // String search
         $strResult = $this->noneDB->find($dbName, ['value' => '123']);
 
-        // Results depend on type comparison behavior
-        $this->assertIsArray($intResult);
-        $this->assertIsArray($strResult);
+        // docs/API.md: filters compare with === ("25" does not match 25)
+        $this->assertSame([['value' => 123, 'key' => 0]], $intResult);
+        $this->assertSame([['value' => '123', 'key' => 1]], $strResult);
     }
 
     /**
@@ -323,8 +326,8 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertEquals(19.99, $result[0]['price']);
-        $this->assertEquals(3.14159, $result[0]['quantity']);
+        $this->assertSame([$data + ['key' => 0]], $result, 'floats are stored exactly');
+        $this->assertSame([0], array_column($this->noneDB->find($dbName, ['negative' => -123.456]), 'key'));
     }
 
     /**
@@ -343,7 +346,7 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertNull($result[0]['description']);
+        $this->assertSame([$data + ['key' => 0]], $result, 'null fields are kept');
     }
 
     /**
@@ -361,8 +364,7 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertIsArray($result[0]['items']);
-        $this->assertCount(0, $result[0]['items']);
+        $this->assertSame([['items' => [], 'tags' => [], 'key' => 0]], $result);
     }
 
     /**
@@ -379,12 +381,8 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertNotEmpty($result);
-        $this->assertArrayHasKey('mixed', $result[0]);
-        $this->assertEquals(1, $result[0]['mixed'][0]);
-        $this->assertEquals('two', $result[0]['mixed'][1]);
-        $this->assertTrue($result[0]['mixed'][3]);
-        $this->assertNull($result[0]['mixed'][4]);
+        // Every element with its type: 3.0 stays a float (docs/API.md "Floats keep their type")
+        $this->assertSame([['mixed' => [1, 'two', 3.0, true, null, ['nested' => 'value']], 'key' => 0]], $result);
     }
 
     // ==========================================
@@ -409,8 +407,7 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertEquals('He said "Hello"', $result[0]['quotes']);
-        $this->assertEquals("line1\nline2", $result[0]['newline']);
+        $this->assertSame([$data + ['key' => 0]], $result);
     }
 
     /**
@@ -427,7 +424,7 @@ class EdgeCasesTest extends noneDBTestCase
         $this->noneDB->insert($dbName, $data);
         $result = $this->noneDB->find($dbName, 0);
 
-        $this->assertIsString($result[0]['content']);
+        $this->assertSame("text\r\nwith\tcontrol\x00chars", $result[0]['content'], 'byte for byte, NUL included');
     }
 
     // ==========================================
@@ -448,9 +445,11 @@ class EdgeCasesTest extends noneDBTestCase
 
         $result = $this->noneDB->find($dbName, 0);
 
-        // All records deleted (but nulled in place)
-        $nonNullCount = count(array_filter($result, fn($r) => $r !== null));
-        $this->assertEquals(0, $nonNullCount);
+        // All records deleted
+        $this->assertSame([], $result);
+        // Keys 0..9 were used: the next record gets 10 (keys are never reused)
+        $this->noneDB->insert($dbName, ['iteration' => 'after']);
+        $this->assertSame([['iteration' => 'after', 'key' => 10]], $this->noneDB->find($dbName, 0));
     }
 
     /**
@@ -472,7 +471,8 @@ class EdgeCasesTest extends noneDBTestCase
         // Find remaining
         $remaining = $this->noneDB->find($dbName, ['type' => 'test']);
 
-        $this->assertCount(3, $remaining);
+        $this->assertSame([0, 2, 4], array_column($remaining, 'index'));
+        $this->assertSame([0, 2, 4], array_column($remaining, 'key'));
     }
 
     /**
@@ -497,7 +497,10 @@ class EdgeCasesTest extends noneDBTestCase
             ['set' => ['status' => 'inactive']]
         ]);
 
-        $this->assertEquals(2, $result['n']);
+        $this->assertSame(['n' => 2], $result);
+        $this->assertSame([[1, 'inactive', 0], [3, 'inactive', 2]], array_map(function ($r) {
+            return [$r['id'], $r['status'], $r['key']];
+        }, $this->noneDB->find($dbName, 0)));
     }
 
     // ==========================================
@@ -506,7 +509,7 @@ class EdgeCasesTest extends noneDBTestCase
 
     /**
      * @test
-     * v3.0: JSONL format gracefully handles corrupted data (returns empty array)
+     * Corrupted data is handled gracefully (returns empty array)
      */
     public function operationsOnCorruptedDataReturnsEmptyArray(): void
     {
@@ -520,11 +523,20 @@ class EdgeCasesTest extends noneDBTestCase
         file_put_contents($filePath, '{invalid json}', LOCK_EX);
         clearstatcache(true, $filePath);
 
-        // JSONL gracefully returns empty array on corrupted data
+        // The bytes have no line end: an unterminated tail, never a record (docs/STORAGE_FORMAT.md §6.1)
         $findResult = $this->noneDB->find($dbName, 0);
 
-        $this->assertIsArray($findResult);
-        $this->assertEmpty($findResult);
+        $this->assertSame([], $findResult);
+        clearstatcache();
+        $this->assertSame('{invalid json}', file_get_contents($filePath), 'readers never cut');
+
+        // The next write keeps the bytes in a quarantine file recovery/q.{seg}.{off}.{len}.{sha256}.bin (§7.2),
+        // cuts them and starts the data at offset 0
+        $this->assertSame(['n' => 1], $this->noneDB->insert($dbName, ['v' => 'after']));
+        $this->assertSame([['v' => 'after', 'key' => 0]], $this->noneDB->find($dbName, 0));
+        $quarantine = glob($this->dbPath($dbName, 'quarantine') . 'q.*');
+        $this->assertSame([$this->dbPath($dbName, 'quarantine') . 'q.main.0.14.' . hash('sha256', '{invalid json}') . '.bin'], $quarantine);
+        $this->assertSame('{invalid json}', file_get_contents($quarantine[0]));
     }
 
     /**
@@ -539,31 +551,31 @@ class EdgeCasesTest extends noneDBTestCase
         $filePath = $this->getDbFilePath($dbName);
         file_put_contents($filePath, '', LOCK_EX);
 
-        // Operations should handle gracefully
         $findResult = $this->noneDB->find($dbName, 0);
 
-        $this->assertIsArray($findResult);
+        $this->assertSame([], $findResult);
+        $this->assertSame(['n' => 1], $this->noneDB->insert($dbName, ['v' => 1]));
+        $this->assertSame([['v' => 1, 'key' => 0]], $this->noneDB->find($dbName, 0));
     }
 
     /**
      * @test
-     * v3.0: JSONL format uses index file, non-JSONL data is treated as empty
+     * Bytes that are not a complete JSONL line are no records: the database reads as empty
      */
     public function operationsOnMissingDataKeyReturnsEmptyArray(): void
     {
         $dbName = 'missingdatakeytest';
 
-        // Create file with valid JSON but missing 'data' key (non-JSONL format)
+        // Valid JSON without a line end and without a key
         $this->noneDB->createDB($dbName);
         $filePath = $this->getDbFilePath($dbName);
         file_put_contents($filePath, '{"items": []}', LOCK_EX);
         clearstatcache(true, $filePath);
 
-        // JSONL uses index file for records, returns empty for non-JSONL data
+        // No complete line: nothing is a record (docs/STORAGE_FORMAT.md §6.1)
         $findResult = $this->noneDB->find($dbName, 0);
 
-        $this->assertIsArray($findResult);
-        $this->assertEmpty($findResult);
+        $this->assertSame([], $findResult);
     }
 
     // ==========================================
@@ -589,10 +601,10 @@ class EdgeCasesTest extends noneDBTestCase
         $result = $this->noneDB->insert($dbName, $data);
 
         // Should succeed - 'key' is only reserved at top level
-        $this->assertEquals(1, $result['n']);
+        $this->assertSame(['n' => 1], $result);
 
         $found = $this->noneDB->find($dbName, 0);
-        $this->assertEquals('api_key_12345', $found[0]['metadata']['key']);
+        $this->assertSame([$data + ['key' => 0]], $found);
     }
 
     /**
@@ -610,8 +622,7 @@ class EdgeCasesTest extends noneDBTestCase
         // Find by key 0 (first record)
         $result = $this->noneDB->find($dbName, ['key' => 0]);
 
-        $this->assertCount(1, $result);
-        $this->assertEquals('first', $result[0]['name']);
+        $this->assertSame([['name' => 'first', 'key' => 0]], $result);
     }
 
     /**
@@ -629,10 +640,11 @@ class EdgeCasesTest extends noneDBTestCase
         // Delete by key 0
         $result = $this->noneDB->delete($dbName, ['key' => [0]]);
 
-        $this->assertEquals(1, $result['n']);
+        $this->assertSame(['n' => 1], $result);
 
-        // First record should be null
+        // The first record is gone, the second keeps key 1
         $remaining = $this->noneDB->find($dbName, ['name' => 'first']);
-        $this->assertCount(0, $remaining);
+        $this->assertSame([], $remaining);
+        $this->assertSame([['name' => 'second', 'key' => 1]], $this->noneDB->find($dbName, 0));
     }
 }

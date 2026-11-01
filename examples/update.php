@@ -56,12 +56,12 @@ $bob = $db->find("users", ["name" => "Bob"]);
 echo "   Bob's new data: age=" . $bob[0]['age'] . ", status=" . $bob[0]['status'] . "\n";
 
 // -----------------------------------------
-// 3. Update by Key (Index)
+// 3. Update by Key
 // -----------------------------------------
-echo "\n3. Update by Key (Index):\n";
+echo "\n3. Update by Key:\n";
 
 $result = $db->update("users", [
-    ["key" => 2],                    // Update record at index 2 (Charlie)
+    ["key" => 2],                    // Update the record with key 2 (Charlie)
     ["set" => ["verified" => true]]
 ]);
 echo "   Updated: " . $result['n'] . " record(s)\n";

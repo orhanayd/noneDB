@@ -24,32 +24,32 @@ class CRUDWorkflowTest extends noneDBTestCase
             'email' => 'test@example.com',
             'status' => 'active'
         ]);
-        $this->assertEquals(1, $insertResult['n']);
+        $this->assertSame(['n' => 1], $insertResult);
 
         // READ
         $findResult = $this->noneDB->find($dbName, ['username' => 'testuser']);
-        $this->assertCount(1, $findResult);
-        $this->assertEquals('test@example.com', $findResult[0]['email']);
+        $this->assertSame([['username' => 'testuser', 'email' => 'test@example.com', 'status' => 'active', 'key' => 0]], $findResult);
 
         // UPDATE
         $updateResult = $this->noneDB->update($dbName, [
             ['username' => 'testuser'],
             ['set' => ['email' => 'updated@example.com', 'status' => 'inactive']]
         ]);
-        $this->assertEquals(1, $updateResult['n']);
+        $this->assertSame(['n' => 1], $updateResult);
 
         // Verify update
         $afterUpdate = $this->noneDB->find($dbName, ['username' => 'testuser']);
-        $this->assertEquals('updated@example.com', $afterUpdate[0]['email']);
-        $this->assertEquals('inactive', $afterUpdate[0]['status']);
+        $this->assertSame([['username' => 'testuser', 'email' => 'updated@example.com', 'status' => 'inactive', 'key' => 0]], $afterUpdate);
 
         // DELETE
         $deleteResult = $this->noneDB->delete($dbName, ['username' => 'testuser']);
-        $this->assertEquals(1, $deleteResult['n']);
+        $this->assertSame(['n' => 1], $deleteResult);
 
         // Verify delete
         $afterDelete = $this->noneDB->find($dbName, ['username' => 'testuser']);
-        $this->assertCount(0, $afterDelete);
+        $this->assertSame([], $afterDelete);
+        $this->assertSame([], $this->noneDB->find($dbName, 0));
+        $this->assertSame(0, $this->noneDB->count($dbName));
     }
 
     /**
@@ -70,7 +70,8 @@ class CRUDWorkflowTest extends noneDBTestCase
 
         // Find all
         $all = $this->noneDB->find($dbName, 0);
-        $this->assertCount(5, $all);
+        $this->assertSame([0, 1, 2, 3, 4], array_column($all, 'key'));
+        $this->assertSame([1, 2, 3, 4, 5], array_column($all, 'id'));
 
         // Update users with score < 30
         $this->noneDB->update($dbName, [
@@ -98,19 +99,20 @@ class CRUDWorkflowTest extends noneDBTestCase
 
         // Find beginners
         $beginners = $this->noneDB->find($dbName, ['level' => 'beginner']);
-        $this->assertCount(2, $beginners);
+        $this->assertSame([1, 2], array_column($beginners, 'id'));
 
         // Find advanced
         $advanced = $this->noneDB->find($dbName, ['level' => 'advanced']);
-        $this->assertCount(2, $advanced);
+        $this->assertSame([4, 5], array_column($advanced, 'id'));
 
         // Delete intermediate
         $this->noneDB->delete($dbName, ['level' => 'intermediate']);
 
         // Verify remaining count
         $remaining = $this->noneDB->find($dbName, 0);
-        // Deleted records are filtered out, so 5 - 1 = 4 remaining
-        $this->assertCount(4, $remaining);
+        // Deleted records are filtered out, so 5 - 1 = 4 remaining, with their keys
+        $this->assertSame([0, 1, 3, 4], array_column($remaining, 'key'));
+        $this->assertSame(['beginner', 'beginner', 'advanced', 'advanced'], array_column($remaining, 'level'));
     }
 
     /**
@@ -135,8 +137,7 @@ class CRUDWorkflowTest extends noneDBTestCase
         $db2 = new \noneDB($testConfig);
         $result = $db2->find($dbName, ['mykey' => 'value1']);
 
-        $this->assertCount(1, $result);
-        $this->assertEquals('value1', $result[0]['mykey']);
+        $this->assertSame([['mykey' => 'value1', 'key' => 0]], $result);
 
         // Update with third instance
         $db3 = new \noneDB($testConfig);
@@ -149,7 +150,8 @@ class CRUDWorkflowTest extends noneDBTestCase
         $db4 = new \noneDB($testConfig);
         $updated = $db4->find($dbName, ['mykey' => 'value2']);
 
-        $this->assertCount(1, $updated);
+        $this->assertSame([['mykey' => 'value2', 'key' => 0]], $updated);
+        $this->assertSame([], $db4->find($dbName, ['mykey' => 'value1']));
     }
 
     /**
@@ -175,12 +177,9 @@ class CRUDWorkflowTest extends noneDBTestCase
         $this->noneDB->insert($dbName, ['item' => 'new1']);
         $this->noneDB->insert($dbName, ['item' => 'new2']);
 
-        // Find new data
-        $new1 = $this->noneDB->find($dbName, ['item' => 'new1']);
-        $new2 = $this->noneDB->find($dbName, ['item' => 'new2']);
-
-        $this->assertCount(1, $new1);
-        $this->assertCount(1, $new2);
+        // Find new data. docs/API.md: keys are never reused, not by deletes and not by compaction (the deletes
+        // above compacted the file; the last one kept a tombstone for key 2): the new records get 3 and 4
+        $this->assertSame([['item' => 'new1', 'key' => 3], ['item' => 'new2', 'key' => 4]], $this->noneDB->find($dbName, 0));
     }
 
     /**
@@ -200,7 +199,7 @@ class CRUDWorkflowTest extends noneDBTestCase
         $result = $this->noneDB->insert($dbName, $data);
         $insertTime = microtime(true) - $start;
 
-        $this->assertEquals(500, $result['n']);
+        $this->assertSame(['n' => 500], $result);
         $this->assertLessThan(5, $insertTime, 'Bulk insert should complete in under 5 seconds');
 
         // Find all
@@ -208,7 +207,8 @@ class CRUDWorkflowTest extends noneDBTestCase
         $all = $this->noneDB->find($dbName, 0);
         $findTime = microtime(true) - $start;
 
-        $this->assertCount(500, $all);
+        $this->assertSame(range(0, 499), array_column($all, 'key'));
+        $this->assertSame(range(0, 499), array_column($all, 'index'), 'record i has key i');
         $this->assertLessThan(2, $findTime, 'Find all should complete in under 2 seconds');
     }
 
@@ -230,15 +230,15 @@ class CRUDWorkflowTest extends noneDBTestCase
 
         // Find type A
         $typeA = $this->noneDB->find($dbName, ['type' => 'A']);
-        $this->assertCount(2, $typeA);
+        $this->assertSame([0, 1], array_column($typeA, 'key'));
 
         // Find active
         $active = $this->noneDB->find($dbName, ['status' => 'active']);
-        $this->assertCount(3, $active);
+        $this->assertSame([0, 2, 3], array_column($active, 'key'));
 
         // Find type B AND active
         $typeB_active = $this->noneDB->find($dbName, ['type' => 'B', 'status' => 'active']);
-        $this->assertCount(2, $typeB_active);
+        $this->assertSame([75, 200], array_column($typeB_active, 'value'));
 
         // Update all type A to inactive
         $this->noneDB->update($dbName, [
@@ -248,7 +248,8 @@ class CRUDWorkflowTest extends noneDBTestCase
 
         // Verify update
         $activeAfter = $this->noneDB->find($dbName, ['status' => 'active']);
-        $this->assertCount(2, $activeAfter); // Only type B active remains
+        $this->assertSame([2, 3], array_column($activeAfter, 'key')); // Only type B active remains
+        $this->assertSame(['inactive', 'inactive', 'active', 'active', 'inactive'], array_column($this->noneDB->find($dbName, 0), 'status'));
     }
 
     /**
@@ -268,7 +269,7 @@ class CRUDWorkflowTest extends noneDBTestCase
 
         // Verify update
         $item = $this->noneDB->find($dbName, ['name' => 'item1']);
-        $this->assertEquals(5, $item[0]['quantity']);
+        $this->assertSame([['name' => 'item1', 'quantity' => 5, 'key' => 0]], $item);
 
         // Update again
         $this->noneDB->update($dbName, [
@@ -281,7 +282,8 @@ class CRUDWorkflowTest extends noneDBTestCase
 
         // Verify deletion
         $remaining = $this->noneDB->find($dbName, ['name' => 'item1']);
-        $this->assertCount(0, $remaining);
+        $this->assertSame([], $remaining);
+        $this->assertSame([], $this->noneDB->find($dbName, 0));
     }
 
     /**
@@ -293,16 +295,21 @@ class CRUDWorkflowTest extends noneDBTestCase
         $dbName = 'dbinfotest';
 
         // Insert data
+        $before = time();
         $this->noneDB->insert($dbName, [
             ['data' => str_repeat('x', 1000)],
         ]);
+        $after = time();
 
-        // Get DB info
+        // Get DB info (docs/API.md getDBs($name): name, createdTime, size)
         $info = $this->noneDB->getDBs($dbName);
 
         $this->assertIsArray($info);
-        $this->assertEquals($dbName, $info['name']);
-        $this->assertArrayHasKey('size', $info);
-        $this->assertArrayHasKey('createdTime', $info);
+        $this->assertSame($dbName, $info['name']);
+        $this->assertIsString($info['size']);
+        $this->assertIsInt($info['createdTime']);
+        $this->assertGreaterThanOrEqual($before, $info['createdTime'], 'created by this insert');
+        $this->assertLessThanOrEqual($after, $info['createdTime']);
+        $this->assertFalse($this->noneDB->getDBs('not-created'), 'false if it does not exist');
     }
 }

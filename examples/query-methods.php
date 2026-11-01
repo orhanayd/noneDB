@@ -41,7 +41,7 @@ echo "   Count: " . count($cities) . " unique cities\n";
 // -----------------------------------------
 // 2. Get Unique Email Domains
 // -----------------------------------------
-echo "\n2. Distinct on Nested Processing:\n";
+echo "\n2. Unique Email Domains:\n";
 
 $emails = $db->distinct("users", "email");
 echo "   Emails: " . json_encode($emails) . "\n";

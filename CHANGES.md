@@ -1,10 +1,227 @@
 # noneDB Changelog
 
+## v4.0.0 (unreleased)
+
+### A new engine and a new storage format
+
+noneDB 4 keeps what noneDB is: one PHP file, no server, no extension, plain JSON lines on disk. Underneath, the
+engine is new. It has its own storage format (format 4) and opens a database only when it can prove what the
+database is. Writes are rolled back when they fail, and crash recovery never loses a write it acknowledged. Durable
+mode survives a power loss. Backups are consistent, metrics are cheap, and the costs of operations are bounded.
+
+noneDB 4 does not read the files of noneDB 1.x–3.x, and has no compatibility layer for them. A separate tool,
+`noneDB-migrate.php`, converts them once, verified and reversible ([docs/MIGRATION.md](docs/MIGRATION.md)).
+
+Requirements: PHP 8.1 or later, 64-bit (tested on 8.1–8.5); the `json` extension, and `mbstring` for Unicode case
+folding in `like()`.
+
+What "production-ready" covers: embedded use on one machine with a local file system. It does not cover
+multi-record ACID transactions, or network file systems (NFS, SMB, a volume shared by several containers).
+
+---
+
+### Upgrading from 1.x–3.x (read first)
+
+1. **Migrate the databases.** Stop every process that uses the directory, then run the tool with the key the
+   databases were written with:
+   ```bash
+   NONEDB_SECRET=... php noneDB-migrate.php --dir=./db --dry-run
+   NONEDB_SECRET=... php noneDB-migrate.php --dir=./db --backup-dir=/var/backups/nonedb --confirm-stopped --verify
+   ```
+   The tool reads 1.4, 2.0–2.3, 3.0–3.2 and the unreleased 3.3 development state. Each version's records come
+   through as that version returned them, with their keys. Records a version had deleted stay deleted, even where
+   its data file still holds them. The old files are backed up first, then kept until `--cleanup`; `--restore`
+   brings them back. A database whose files don't determine its records is reported and left alone: nothing is
+   guessed.
+2. **Until then the engine refuses the old files.** While `dbDir` holds files that are not noneDB 4 objects, no
+   database is created and none is answered as missing (`UNSUPPORTED_FORMAT`). An old database never looks empty.
+   noneDB 4 databases in the same directory keep working.
+3. **PHP 8.1+.** PHP 7.4 and 8.0 are no longer supported.
+4. **Removed methods:** `enableIndexing()`, `isIndexingEnabled()`, `flushSpatialIndexes()`, `clearDistanceCache()`,
+   `clearCentroidCache()` and `noneDBQuery::compareValues()`. Index use follows `fieldIndexEnabled` and
+   `spatialIndexEnabled`; spatial indexes are written by the operations themselves; there are no distance caches.
+5. **Changed:**
+   - `migrate()` is now `convertToSharded()`. It reports `"converted"` (else `"already_sharded"`,
+     `"database_not_found"`, `"conversion_failed"`).
+   - The `autoMigrate` setting is gone: `shardingEnabled` alone decides whether a database switches to shards
+     by itself once it has assigned `shardSize` keys. Remove it from your `.nonedb` before you migrate: noneDB 4
+     refuses settings it doesn't know (item 7), and so does the migration tool's pre-check, for a `.nonedb` the engine
+     finds itself.
+   - `migrateKey()` is a journaled store operation with its own rules (see "Keys" below). Its fourth argument
+     takes options (`abort`).
+6. **Error codes are new:** `RuntimeException` codes, with constants of `noneDB` (`LOCK_FAILED`,
+   `UNSUPPORTED_FORMAT`, `FORMAT_DAMAGED`, `KEY_NOT_REGISTERED`, …; docs/API.md "Errors"). A failure after a
+   commit point, or an undo that failed, is `OUTCOME_UNKNOWN` (3301).
+7. **Settings are checked:**
+   - A key that is not a setting is an `InvalidArgumentException`, in the array and in a `.nonedb` file. The
+     message names it and suggests the setting it was probably meant to be, so a misspelled `durability` never
+     means performance mode.
+   - So is a setting given as `null`.
+   - The options of a method are checked the same way: `createSpatialIndex()`, `withinDistance()`, `nearest()`,
+     `restore()` and the key maintenance methods.
+   - `durability`, `cacheMemoryLimit`, `filePermissions` and `directoryPermissions` are new.
+   - Bool settings accept only `true/false`, `1/0` and `"1"/"0"/"true"/"false"`.
+   - `lockTimeout` takes fractions of a second (docs/CONFIGURATION.md).
+8. **Keys:** a store accepts only the keys registered for it. The first key creates the store; another key gets
+   `KEY_NOT_REGISTERED` (never an empty database) until `registerKey()` adds it.
+
+---
+
+### Storage format 4 (docs/STORAGE_FORMAT.md, normative)
+
+- **A store record** (`STORE`, `STORE.2`: two copies, a sequence number and a checksum) lists the keys that may open
+  the directory.
+- **One directory per database**, `{locator}.ndb4/`. The locator is an HMAC of the name under the key: a name
+  can't be guessed without the key.
+  - `FORMAT` is the database's identity: its `databaseId` (a UUID), its name and its shard size. It doesn't
+    depend on the key.
+  - `LOCK` holds the database lock and a 128-byte state record (generation, epoch, flags).
+  - `CURRENT` names the active generation, `generations/N/`. Changing a database's layout, or restoring it, builds
+    a new generation and publishes it by one atomic replacement of `CURRENT`.
+- **Fail closed.** A database whose identity or active generation can't be proven fails with `FORMAT_DAMAGED`;
+  nothing is guessed and nothing is removed. A file is repaired only with proof (the identity copy in the
+  generation's metadata), and the repair is logged.
+- **Data** stays JSON lines, with the key last in every line. Updates and deletes append; an unterminated last
+  line is never a record. The next writer moves it to a verified quarantine file and cuts it.
+- **Indexes are checkpoints of the data** and are rebuilt from it when they don't fit:
+  - key indexes (`.kix`): 4 KiB blocks, each with its crc; dense or sparse;
+  - field indexes (`.fx`): a static B+tree of ~4 KiB pages;
+  - the global field index (`.gfx`) of a sharded database: one Bloom filter per shard, stored bit-sliced;
+  - R-trees (`.rx`), and each shard's bounding box (`.grx`).
+
+  A write appends to the data and leaves the index files alone. Checkpoints are written at the end of a session,
+  past a threshold.
+
+### Writes, durability and recovery (docs/DURABILITY.md)
+
+- **Every write is one operation with one outcome:**
+  - `committed`;
+  - `rolled_back`: a failure before the commit point; every append of the operation is cut back;
+  - `unknown`: a failure after the commit point, `OUTCOME_UNKNOWN`. The next access recovers.
+
+  `getDurability()['lastOperation']` reports it.
+- **`durability`:** `'performance'` (the default: what the operating system has accepted survives a crash of the
+  process) or `'durable'` (Linux; every write is synced before it returns, so a power loss doesn't lose it).
+  `'durable'` elsewhere is `UNSUPPORTED_DURABILITY` at construction. A sync that fails before the commit point is
+  `DURABILITY_FAILED`, rolled back.
+- **Locks:** a database lock across processes for every operation (shared to read, exclusive to write), and
+  `lockTimeout` for every wait (`LOCK_FAILED`).
+- **Crash recovery** applies complete lines and quarantines the rest; the recovery log (`getRecoveryLog()`) says
+  what was done. A SIGKILL at any point of any operation leaves the state before or after it: tested at every
+  step of every state machine (creation, drop, generation switch, compaction, key maintenance, migration, restore).
+- **`checkIntegrity($db)`** reads every line and compares indexes and counters with the data. It writes nothing.
+
+### Keys (STORAGE_FORMAT.md §9)
+
+- `registerKey($dir, $registeredKey, $newKey)`: lets a second key open the store.
+- `migrateKey($dir, $oldKey, $newKey)`: renames every database of the old key to its locator under the new one.
+  - **Journaled, one commit point.** An interruption leaves the store closed (`MAINTENANCE_IN_PROGRESS`) until the
+    same call runs again: before the commit it continues, or rolls back with `['abort' => true]`; after it, it
+    only finishes.
+  - **Busy:** a database in use makes it `MAINTENANCE_BUSY`, and nothing is written.
+  - **No stale answers:** a process still running with the old key gets `MAINTENANCE_IN_PROGRESS` or
+    `KEY_NOT_REGISTERED`, never an empty database.
+- `repairStore($dir, $keys, $options)`: restores a store record whose two copies are both lost, from a saved
+  `storeManifest` (complete) or, explicitly confirmed, from the keys given (`complete` false). One damaged copy is
+  repaired automatically.
+
+### Backup and restore (new, docs/BACKUP_RESTORE.md)
+
+- **`backup($db, $dir)`:** one database at one moment, taken while it is in use. Its files are verified,
+  `manifest.json` (SHA-256 of every file) is written last, and `store.json` is included. The directory is 0700,
+  its files 0600.
+- **`restore($dir, $db, $options)`:**
+  - checks the backup completely, then publishes it as a new generation in one commit;
+  - into the database it was taken from, into an absent one, or over a damaged one (whose generations are kept);
+  - keys handed out after the backup are never handed out again;
+  - another database's backup only with `force`.
+
+### Monitoring (new, docs/OPERATIONS.md)
+
+- **`getMetrics($db = null)`:** counters of the process and metadata of a database. Nothing is scanned or written.
+  - the process: cache hits, misses and evictions, index reads, checkpoints, compactions, lock waits and
+    timeouts, recovery events, durability, the last integrity check, memory;
+  - a database: its identity, layout, counters and sizes by kind of file.
+
+### Security
+
+- **Permissions:** files `0640`, directories `0750` by default (`filePermissions`, `directoryPermissions`).
+- **Paths:** `dbDir` is used by its canonical path, and a database directory that is a link is refused.
+- **No secrets in logs:** recovery logs, metrics and error messages hold no key and no record value (tested).
+
+### Queries (docs/QUERY.md)
+
+- **A planner** reads only the candidates of each segment:
+  - field index buckets and ranges, and key lookups;
+  - it skips the shards the global indexes rule out;
+  - it stops as soon as `first()`, `exists()` or `limit()` has enough;
+  - top-k for `sort()` with a limit of up to 1000.
+
+  `explain()` shows the plan without reading records. Every record read is still checked against every filter.
+- **Sort order is total:** null < booleans < numbers < numeric strings < other strings < arrays; `min()`/`max()` use
+  it too.
+- **Semantics fixed since 3.2:**
+  - `whereNot()` applies operators;
+  - a `key` filter means the same in every clause;
+  - NAN matches nothing;
+  - `limit(0)` returns nothing;
+  - aggregates ignore `select()`;
+  - groups and `distinct()` use exact typed identity;
+  - joins compare strictly and don't truncate floats;
+  - `like()` and `search()` fold Unicode case;
+  - a trailing `$` of a like pattern means "ends with".
+- **Field indexes match by type**, as `find()` does: `1`, `1.0`, `"1"` and `true` are different values, and floats
+  don't depend on `precision` or the locale.
+- **Spatial fixes:**
+  - polygons are closed (their east and north edges are included), and holes are respected;
+  - MultiPolygon components are handled one by one;
+  - malformed GeoJSON is invalid;
+  - distances to edges are exact;
+  - polygon validation is O(n log n), with exact orientation tests.
+
+### Performance (docs/PERFORMANCE.md)
+
+- Measured against the frozen 3.3 development state with the statistical performance gate (two independent runs,
+  ABBA child processes). That state was itself measured against 3.2.0: single writes to 10,000 records 12–17 times
+  faster, and no verified regression. The results and the known limits are in PERFORMANCE.md.
+- **Bounded memory.** An operation holds the cache, its answer and one batch of the segment it works on, never the
+  whole database or a whole segment. A segment is read 10,000 records at a time, so memory doesn't grow with
+  `shardSize` or with a database that is not sharded (docs/CONFIGURATION.md). This holds for:
+  - reads, aggregations and writes by filter;
+  - field index builds and recovery;
+  - `checkIntegrity()` and the switch to shards.
+
+  `compact()` holds its segment's live bytes, and a spatial index build its entries. With shards of 100,000 records,
+  a scan peaks at about 41 MiB and `checkIntegrity()` at 43 MiB (3.3-dev: 139 and 215 MiB). The migration tool
+  converts 10 million records at PHP's default `memory_limit` of 128M.
+- **10 million records** (1000 shards):
+  - the first indexed query of a process takes 0.27 s (3.3-dev: 7.3 s);
+  - a warm query takes 26 ms and its process peaks at 1.3 GiB (3.3-dev: 31 ms, 2.3 GiB);
+  - queries work within a 512 MiB process (3.3-dev ran out of memory).
+- **Data files in repeated use are held.** In a database of more than 16 segments, a process with a memory limit reads a
+  data file whole once its use pays for it, and its records no longer cost an open and a read each. The bytes stay under
+  half of the cache limit (docs/CONFIGURATION.md "The cache"), and they never change an answer.
+
+### Code and tests
+
+- **Modules:** `noneDB.php` is built from `src/` (one class per responsibility, `noneDB\Internal\…`), and
+  `noneDB-migrate.php` from `migrate/`. `php tools/build.php --check` proves both artifacts are the build. Neither
+  artifact contains test code: the test build adds fault points and counters.
+- **Suites:** about 1950 tests (unit, integration, crash, concurrency, differential, migration), on PHP 8.1–8.5
+  (8.3–8.5 and durable mode on Linux).
+  - Expected values come from the specification or from the test's own models of the formats.
+  - Mutation checks for every new mechanism.
+  - Migration fixtures are written by the old releases themselves.
+- **Documentation examples** run in CI against the built library (`tests/Docs/doctest.php`).
+
+---
+
 ## v3.2.0 (2026-10-23)
 
 ### Reliability, security and correctness release
 
-This release fixes every finding of the full code review (see `CODE_REVIEW.md`). Most changes are
+This release fixes every finding of a full code review. The IDs in parentheses (K-01, Y-14, ...) name
+those findings; the tests in `tests/Regression` are annotated with the same IDs. Most changes are
 internal; the few behaviour changes are listed under **Upgrade notes** below.
 
 ---

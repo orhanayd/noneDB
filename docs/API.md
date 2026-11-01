@@ -1,574 +1,495 @@
 # noneDB API Reference
 
-Complete reference for all noneDB methods and operations.
+Every public method of noneDB 4.0.0. The query builder (`$db->query()`) is in [QUERY.md](QUERY.md), the spatial
+queries in [SPATIAL.md](SPATIAL.md), the settings in [CONFIGURATION.md](CONFIGURATION.md).
 
-**Version:** 3.2.0
+**Database names** may contain `A-Z a-z 0-9`, space, `'` and `-`. Anything else throws
+`InvalidArgumentException`, a line feed at the end too; a name is never changed silently. `"0"` is a valid name.
+`checkDB()` answers `false` for `''`, `null` and `false` without throwing.
 
-**Database names** may contain `A-Z a-z 0-9`, space, `'` and `-`; every method throws
-`InvalidArgumentException` for anything else (names are never changed silently). `"0"` is valid.
+**Locking.** An operation locks its database for its whole duration: shared for reads, exclusive for writes.
+A read of a database that does not exist takes no database lock (only the store's, shared) and creates nothing. Joins lock every database of the
+query at once. Waiting longer than `lockTimeout` seconds throws `RuntimeException` with code
+`noneDB::LOCK_FAILED`.
 
-**Locking:** every method locks its database for its whole duration (shared for reads, exclusive for
-writes). Waiting longer than `lockTimeout` seconds throws `RuntimeException`.
+**A write that throws leaves no record of itself behind.** When `insert()`, `update()`, `delete()` or a query
+builder write throws, the lines it appended are cut back, together with writes nested in it on the same
+database (from an error handler, for example). The details:
+- Records flushed from the write buffer before the call's own writes stay written: they were acknowledged.
+- In a sharded database the keys it reserved stay used and the shards it created stay listed, empty: the next
+  insert gets a later key.
+- Work a write triggers after it committed (compaction, the switch to shards, a buffer flush) is not part of
+  it. If that work fails, the write still succeeds; the failure is logged (`deferred-failed`) and the work runs
+  again later.
+- Operations that replace or remove files (`dropDB()`, `compact()`, `convertToSharded()`, `restore()`), and
+  `backup()`, refuse to run inside a write of the same database from the write's first step, before its first append
+  too (a value's `jsonSerialize()` runs there): `LogicException`, no file touched. Call them after the write.
+- The outcomes of a write are in [DURABILITY.md](DURABILITY.md) §2: committed, rolled back, or unknown
+  (`noneDB::OUTCOME_UNKNOWN`).
+
+**Options are the documented ones.** A method that takes an options array (`createSpatialIndex()`,
+`withinDistance()`, `nearest()`, `restore()`, `migrateKey()`, `registerKey()`, `repairStore()`) accepts exactly the
+options its section names, of the types it names. Anything else is an `InvalidArgumentException` before the method
+does anything, also from the static key maintenance methods: the message names the option, suggests the one it was
+probably meant to be, and lists them. A misspelled `abort` can't let a rotation go on.
+
+The examples below run in order against one store (CI runs them).
+
+```php
+$db = new noneDB(); // reads .nonedb (CONFIGURATION.md)
+```
 
 ---
 
-## Table of Contents
+## Contents
 
-1. [Database Operations](#database-operations)
-2. [CRUD Operations](#crud-operations)
-3. [Query Operations](#query-operations)
-4. [Aggregation](#aggregation)
-5. [Sharding](#sharding)
-6. [Field Indexing](#field-indexing)
-7. [Spatial Indexing](#spatial-indexing)
-8. [Utility Methods](#utility-methods)
+1. [Databases](#databases)
+2. [Records](#records)
+3. [Aggregation and helpers](#aggregation-and-helpers)
+4. [Sharding and compaction](#sharding-and-compaction)
+5. [Field indexes](#field-indexes)
+6. [Spatial indexes](#spatial-indexes)
+7. [Write buffer](#write-buffer)
+8. [Durability, integrity and metrics](#durability-integrity-and-metrics)
+9. [Backup and restore](#backup-and-restore)
+10. [Key maintenance](#key-maintenance)
+11. [Static helpers](#static-helpers)
+12. [Errors](#errors)
 
 ---
 
-## Database Operations
+## Databases
 
-### createDB()
-
-Create a new database.
+### createDB() / checkDB()
 
 ```php
-$result = $db->createDB("users");
-// Returns: true (created) or false (already exists)
-```
-
-### checkDB()
-
-Check if database exists. Creates it if `autoCreateDB` is true.
-
-```php
-$exists = $db->checkDB("users");
-// Returns: true or false (false for null / "")
-```
-
-### dropDB()
-
-Delete a database and all of its files (data, shards, indexes, buffers, metadata).
-
-```php
-$result = $db->dropDB("users");
-// ["success" => true, "files" => 7]   or   ["success" => false, "files" => 0, "error" => "Database does not exist"]
-```
-
-### migrateKey() (static)
-
-Re-key existing databases (all files of every database created with `$oldKey` are renamed). Run it
-while nothing else uses the databases, then put the new key in your config.
-
-```php
-$result = noneDB::migrateKey('/var/data/db', $oldKey, $newKey);
-// ["success" => true, "databases" => ["users", "orders"], "files" => 14, "error" => null]
+$db->createDB("users");   // true: created
+$db->createDB("users");   // false: it exists
+$db->checkDB("users");    // true; creates a missing database when autoCreateDB is on, else false
 ```
 
 ### getDBs()
 
-List databases.
-
 ```php
-// Names only
-$names = $db->getDBs(false);
-// ["users", "posts", "comments"]
-
-// With metadata
-$dbs = $db->getDBs(true);
-// [
-//     ["name" => "users", "createdTime" => 1703123456, "size" => "2,5 KB"],
-//     ...
-// ]
-
-// Single database info (false if it doesn't exist; never creates it)
-$info = $db->getDBs("users");
-// ["name" => "users", "createdTime" => 1703123456, "size" => "2,5 KB"]
+$db->getDBs(false);       // ["users"]: names only, sorted
+$db->getDBs(true);        // [["name" => "users", "createdTime" => 1793291271, "size" => "185 B"], ...]
+$db->getDBs("users");     // ["name" => "users", "createdTime" => 1793291271, "size" => "185 B"]; false when missing
 ```
 
-Only databases of the current `secretKey` are listed; sharded databases appear once, with the total
-size of their shards. Sizes use a comma as decimal separator (`"2,5 KB"`).
+Only the databases of this instance's `secretKey` are listed. `size` is the size of the data files, with a
+comma as decimal separator (`"2,5 KB"`). A database whose directory holds shard files its shard list doesn't
+name lists them as `orphanFiles` (set aside as `*.orphan.{YmdHis}`, never deleted automatically).
+
+### dropDB()
+
+```php
+$db->createDB("old");
+$db->dropDB("old");       // ["success" => true, "files" => 5]
+$db->dropDB("old");       // ["success" => false, "files" => 0, "error" => "Database does not exist"]
+```
+
+Removes every file of the database except its lock file (STORAGE_FORMAT.md §8.2).
 
 ---
 
-## CRUD Operations
+## Records
 
 ### insert()
 
-Insert one or more records.
-
 ```php
-// Single record
-$result = $db->insert("users", ["name" => "John", "email" => "john@test.com"]);
-// ["n" => 1]
-
-// Multiple records
-$result = $db->insert("users", [
-    ["name" => "John"],
-    ["name" => "Jane"]
-]);
-// ["n" => 2]
-
-// With nested data
-$result = $db->insert("users", [
-    "name" => "John",
-    "address" => ["city" => "Istanbul", "country" => "Turkey"]
-]);
+$db->insert("users", ["name" => "John", "email" => "john@example.com"]);   // ["n" => 1]
+$db->insert("users", [["name" => "Jane", "age" => 31], ["name" => "Ali", "age" => 27]]); // ["n" => 2]
+$db->insert("users", ["name" => "Ayşe", "address" => ["city" => "Istanbul"]]);
 ```
 
-**Errors:**
+Invalid input returns an `error` and writes nothing:
 
 ```php
-// Reserved field
-$db->insert("users", ["key" => "value"]);
-// ["n" => 0, "error" => "You cannot set key name to key"]
-
-// Invalid data
-$db->insert("users", "not an array");
-// ["n" => 0, "error" => "insert data must be array"]
-
-// Empty data, or a mix of a list and named fields
-$db->insert("users", []);                              // ["n" => 0, "error" => "insert data must not be empty"]
-$db->insert("users", [0 => ["a" => 1], "name" => "x"]); // ["n" => 0, "error" => "insert data must be either one record or a list of records"]
-
-// Values JSON can't represent (invalid UTF-8, NAN, INF): nothing is written
-$db->insert("users", ["v" => NAN]);                  // ["n" => 0, "error" => "insert data cannot be encoded as JSON ..."]
+$db->insert("users", ["key" => 5]);         // ["n" => 0, "error" => "You cannot set key name to key"]
+$db->insert("users", "not an array");       // ["n" => 0, "error" => "insert data must be array"]
+$db->insert("users", []);                   // ["n" => 0, "error" => "insert data must not be empty"]
+$db->insert("users", [0 => ["a" => 1], "name" => "x"]); // "insert data must be either one record or a list of records"
+$db->insert("users", ["v" => NAN]);         // "insert data cannot be encoded as JSON (invalid UTF-8, NAN/INF or unsupported value)"
 ```
 
-Keys are assigned in order and are **never reused or changed** (not by deletes, not by `compact()`).
-Floats keep their type (`2.0` is read back as `2.0`).
+Keys are assigned in order and **never reused or changed**: not by a delete, not by `compact()`, not by a
+`restore()` of an older backup. Floats keep their type (`2.0` reads back as `2.0`).
 
 ### find()
 
-Find records matching filter.
-
 ```php
-// All records
-$all = $db->find("users", 0);
-$all = $db->find("users", []);
-
-// By field
-$results = $db->find("users", ["name" => "John"]);
-
-// By multiple fields (AND)
-$results = $db->find("users", ["name" => "John", "active" => true]);
-
-// By key
-$results = $db->find("users", ["key" => 0]);
-$results = $db->find("users", ["key" => [0, 1, 2]]);
+$db->find("users", 0);                       // every record
+$db->find("users", ["name" => "John"]);      // by field
+$db->find("users", ["name" => "Jane", "age" => 31]); // several fields: all must match
+$db->find("users", ["key" => 0]);            // by key
+$db->find("users", ["key" => [0, 1, 2]]);    // by keys, in this order
 ```
 
-**Matching rules** (shared by `find()`, `update()` and `delete()`):
+**Matching** (shared by `find()`, `update()` and `delete()`):
+- every filter field must exist in the record and be **identical** (`===`): `"25"` does not match `25`;
+  `null` matches only a field that exists with the value `null`; arrays must be equal as a whole;
+- `key` takes an integer, a digit string or a list of them, and is combined with the other fields (AND);
+- `[]` selects every record. `find()` (and `count()`, `sum()`, `first()`, ...) also take an integer (normally
+  `0`) or `null` for every record. Any other non-array filter matches nothing: `find()` returns `false`,
+  `count()`/`sum()`/`avg()` 0, `min()`/`max()`/`first()`/`last()` `null`, `exists()`/`between()` `false`.
 
-- Every filter field must exist in the record and be **identical** (`===`): `"25"` does not match `25`,
-  `null` matches only a field that exists with the value `null`, arrays must be equal as a whole.
-- `key` accepts an integer, a digit string (`"5"`) or a list of them; anything else matches nothing.
-  It is combined with the other filters (AND).
-- Any integer (normally `0`), `null` and `[]` select every record. Other non-array filters return `false`.
-
-**Returns:** Array of records with `key` field added (in key order, or in the order of a `key` list).
-Returns `[]` for a database that doesn't exist (`false` if `autoCreateDB` is off); reading never
-creates a database.
+Records come back with their `key`, in key order (or in the order of a `key` list). A database that does not
+exist gives `[]` (`false` with `autoCreateDB` off); a read never creates one.
 
 ### update()
 
-Update matching records.
-
 ```php
-// By field
-$result = $db->update("users", [
-    ["name" => "John"],           // Filter
-    ["set" => ["active" => true]] // Updates
-]);
-// ["n" => 1]
-
-// By key
-$result = $db->update("users", [
-    ["key" => [0, 1, 2]],
-    ["set" => ["status" => "inactive"]]
-]);
-
-// All records
-$result = $db->update("users", [
-    [],
-    ["set" => ["updated_at" => time()]]
-]);
+$db->update("users", [["name" => "John"], ["set" => ["active" => true]]]);       // ["n" => 1]
+$db->update("users", [["key" => [0, 1]], ["set" => ["status" => "checked"]]]);
+$db->update("users", [[], ["set" => ["updated_at" => time()]]]);                 // every record
 ```
 
-The first element must be a filter array and `set` a non-`key` array of fields; otherwise
-`["n" => 0, "error" => "Please check your update parameters"]`. An empty `set` changes nothing and
-returns the number of matching records.
+The first element is a filter, `set` an array of fields other than `key`; anything else returns
+`["n" => 0, "error" => "Please check your update parameters"]`. A `set` that can't be encoded as JSON returns the
+error `update data cannot be encoded as JSON (invalid UTF-8, NAN/INF or unsupported value)`. An empty `set` changes
+nothing and returns the number of matching records.
 
 ### delete()
 
-Delete matching records.
+```php
+$db->delete("users", ["name" => "Ali"]);     // ["n" => 1]
+$db->delete("users", ["key" => [99]]);       // ["n" => 0]
+$db->delete("users", 0);                     // ["n" => 0, "error" => "Please check your delete parameters"]
+```
+
+`delete("users", [])` deletes every record: an empty filter matches everything.
+
+---
+
+## Aggregation and helpers
 
 ```php
-// By field
-$result = $db->delete("users", ["name" => "John"]);
-// ["n" => 1]
+$db->insert("orders", [["amount" => 120, "status" => "paid", "city" => "Izmir"],
+                       ["amount" => 80, "status" => "open", "city" => "Ankara"],
+                       ["amount" => 45, "status" => "paid", "city" => "Izmir"]]);
+$db->count("orders", 0);                         // 3
+$db->count("orders", ["status" => "paid"]);      // 2
+$db->sum("orders", "amount");                    // 245
+$db->sum("orders", "amount", ["status" => "paid"]); // 165
+$db->avg("orders", "amount");                    // 81.666...
+$db->min("orders", "amount");                    // 45
+$db->max("orders", "amount");                    // 120
+$db->distinct("orders", "city");                 // ["Izmir", "Ankara"]
+$db->first("orders");                            // the record with the lowest key
+$db->last("orders", ["status" => "paid"]);       // the paid record with the highest key
+$db->exists("orders", ["city" => "Ankara"]);     // true
+$db->between("orders", "amount", 50, 150);       // records with 50 <= amount <= 150
+$db->between("orders", "amount", 50, 150, ["status" => "paid"]);
+$db->like("users", "email", "example.com$");     // ends with
+```
 
-// By key
-$result = $db->delete("users", ["key" => [0, 2]]);
+- `min()`/`max()` use the total order of `sort()`: missing/`null` < booleans < numbers < numeric strings (by
+  number) < other strings (byte order) < arrays. `max([50, "10"])` is `"10"`.
+- `distinct()` keeps the order of first appearance and tells types apart (`1`, `1.0` and `"1"` are three
+  values); `null` and missing fields are left out.
+- `like()`: only a leading `^` and a trailing `$` are special; case-insensitive with Unicode case folding
+  (QUERY.md). Strings and numbers are matched; booleans, `null` and arrays never are.
 
-// All records (an empty filter matches everything)
-$result = $db->delete("users", []);
+Helpers on arrays of records:
+
+```php
+$records = $db->find("orders", 0);
+$db->sort($records, "amount", "desc");   // stable, the total order above; false for a non-array
+$db->limit($records, 2);                 // the first 2; false for invalid arguments
 ```
 
 ---
 
-## Query Operations
+## Sharding and compaction
 
-### Query Builder
-
-```php
-$query = $db->query("users");
-```
-
-### Filter Methods
-
-| Method | Description |
-|--------|-------------|
-| `where($filters)` | AND filter with operator support; several calls are all applied (AND) |
-| `orWhere($filters)` | OR group: matches if all `where()` groups match **or** any `orWhere()` group does |
-| `whereIn($field, $values)` | Value in array |
-| `whereNotIn($field, $values)` | Value not in array |
-| `whereNot($filters)` | Excludes records where **any** of the given fields equals its value (`===`); several calls all apply |
-| `like($field, $pattern)` | Pattern match |
-| `notLike($field, $pattern)` | Pattern not match |
-| `between($field, $min, $max)` | Range (inclusive) |
-| `notBetween($field, $min, $max)` | Not inside the range: also returns records without the field or with a value that can't be compared (e.g. `null`, `true`, text vs numbers) |
-| `search($term, $fields)` | Full-text search |
-
-### Comparison Operators
+A database switches to the sharded layout once it has assigned `shardSize` keys (`shardingEnabled`, on by default):
+shard N holds the keys `[N × shardSize, (N + 1) × shardSize)`. The shard size is fixed when the database is
+created.
 
 ```php
-// Several operators on one field go into one array (a PHP array can't repeat a key)
-$db->query("users")->where([
-    'age' => ['$gte' => 18, '$lt' => 65],            // Range
-    'role' => ['$ne' => 'guest'],                     // Not equal
-    'status' => ['$in' => ['active', 'pending']],      // In array (strict)
-    'email' => ['$exists' => true],                   // Field exists
-    'name' => ['$like' => '^John'],                   // Pattern (only ^ and $ are special)
-    'tags' => ['$contains' => 'featured']             // Array element / substring
-])->get();
+$db->getShardInfo("orders");
+// ["sharded" => false, "shards" => 0, "totalRecords" => 3, "shardSize" => 10000, "nextKey" => 3]
+// sharded: ["sharded" => true, "shards" => 2, "totalRecords" => 5, "deletedCount" => 0, "shardSize" => 4, "nextKey" => 5]
+// false when the database doesn't exist
 
-// ...or one where() per condition: all of them apply
-$db->query("users")
-    ->where(['age' => ['$gt' => 18]])
-    ->where(['age' => ['$lte' => 65]])
-    ->where(['email' => ['$regex' => '@gmail\\.com$']])   // regular expression, case-insensitive
-    ->get();
+$db->compact("orders");
+// ["success" => true, "freedSlots" => 0, "totalRecords" => 3, "sharded" => false]
+// sharded databases add "newShardCount"; a missing one: ["success" => false, "freedSlots" => 0, "status" => "database_not_found"]
+
+$db->convertToSharded("orders"); // ["success" => true, "status" => "converted"] (or "already_sharded")
+$db->isShardingEnabled();      // true
+$db->getShardSize();           // 10000: the setting for databases created from now on
 ```
 
-- `$gt`, `$gte`, `$lt`, `$lte` (and `between()`) compare numbers and numeric strings numerically and
-  other strings lexically. `null`, booleans, arrays, and a number against a non-numeric string never
-  match.
-- `$eq`, `$ne`, `$in`, `$nin` use strict comparison (`===`).
-- An unknown operator (e.g. a typo like `$gtee`), `$in`/`$nin` without an array or an invalid `$regex`
-  throws `InvalidArgumentException`, also when there are no records to check.
-
-### Modifiers
-
-| Method | Description |
-|--------|-------------|
-| `select($fields)` | Include only specified fields |
-| `except($fields)` | Exclude specified fields |
-| `sort($field, $order)` | Sort results; further calls add tie-breaking keys |
-| `limit($count)` | Limit results |
-| `offset($count)` | Skip records |
-| `join($db, $localKey, $foreignKey, $alias = null)` | Attach the matching foreign record under `$alias` (default: the foreign database name; it replaces a field of that name in the result only). With duplicate foreign keys the last record wins |
-| `groupBy($field)` | Group results (values keep their type: `1`, `"1"` and `1.5` are different groups) |
-| `having($aggregate, $op, $value)` | Filter groups: `count`, `sum:f`, `avg:f`, `min:f`, `max:f`. Ignored without `groupBy()` or for unknown aggregates/operators |
-
-### Terminal Methods
-
-| Method | Returns |
-|--------|---------|
-| `get()` | All matching records |
-| `first()` | First record or null |
-| `last()` | Last record or null |
-| `count()` | Number of matches |
-| `exists()` | Boolean |
-| `sum($field)` | Sum of field |
-| `avg($field)` | Average of field |
-| `min($field)` | Minimum value |
-| `max($field)` | Maximum value |
-| `distinct($field)` | Unique values |
-| `update($set)` | Update matches (sort/offset/limit choose which ones) |
-| `delete()` | Delete matches (sort/offset/limit choose which ones) |
-| `removeFields($fields)` | Remove fields from the **stored** matching records |
+- `nextKey` is the key the next insert gets.
+- `compact()` rewrites data files without deleted and superseded lines. Keys don't change; shards that became
+  empty are removed, except the one of the newest key. Usually not needed: compaction runs by itself
+  (`autoCompactThreshold`).
+- `convertToSharded()` switches a database to the sharded layout now (a generation switch: STORAGE_FORMAT.md
+  §5.2). A database that doesn't exist: `["success" => false, "status" => "database_not_found"]`.
 
 ---
 
-## Aggregation
-
-### count()
+## Field indexes
 
 ```php
-$total = $db->count("users", 0);
-$active = $db->count("users", ["active" => true]);
+$db->createFieldIndex("users", "email");     // ["success" => true, "indexed" => 1, "error" => null] (+ "shards" => N)
+$db->hasFieldIndex("users", "email");        // true
+$db->getFieldIndexes("users");               // ["fields" => ["email"], "sharded" => false]
+$db->getKeysFromFieldIndex("users", "email", "john@example.com"); // [0]; null without an index
+$db->rebuildFieldIndex("users", "email");    // as createFieldIndex()
+$db->dropFieldIndex("users", "email");       // ["success" => true, "error" => null]; without one: "Index does not exist"
 ```
 
-### sum() / avg()
-
-```php
-$totalSalary = $db->sum("users", "salary");
-$avgAge = $db->avg("users", "age");
-$filteredSum = $db->sum("orders", "amount", ["status" => "paid"]);
-```
-
-### min() / max()
-
-```php
-$minPrice = $db->min("products", "price");
-$maxScore = $db->max("scores", "points");
-```
-
-### distinct()
-
-```php
-$cities = $db->distinct("users", "city");
-// ["Istanbul", "Ankara", "Izmir"]
-```
+- `indexed` counts the records whose value can be indexed (a scalar or `null`). An index keeps values by type,
+  as `find()` compares them with `===`: `1`, `1.0` and `"1"` are three values.
+- A field name is any non-empty string except `key`; names that differ in letter case get their own indexes.
+- An index always gives the results of a full scan. A write appends to the data file only; an index replays
+  the lines after the bytes it covers when it is used.
+- `getKeysFromFieldIndex()` takes a shard number as a fourth argument (sharded databases).
 
 ---
 
-## Sharding
-
-### getShardInfo()
+## Spatial indexes
 
 ```php
-$info = $db->getShardInfo("users");
-// [
-//     "sharded" => true,
-//     "shards" => 5,
-//     "totalRecords" => 45000,
-//     "deletedCount" => 150,
-//     "shardSize" => 10000,
-//     "nextKey" => 45150
-// ]
+$db->insert("places", [["name" => "Galata", "loc" => ["type" => "Point", "coordinates" => [28.9741, 41.0256]]],
+                       ["name" => "Kadikoy", "loc" => ["type" => "Point", "coordinates" => [29.0275, 40.9906]]]]);
+$db->createSpatialIndex("places", "loc");    // ["success" => true, "indexed" => 2, "error" => null]
+$db->createSpatialIndex("places", "loc");    // ["success" => false, "indexed" => 0, "error" => "Spatial index already exists for field 'loc'"]
+$db->hasSpatialIndex("places", "loc");       // true (a shard number as third argument: that shard)
+$db->getSpatialIndexes("places");            // ["loc"]
+$db->rebuildSpatialIndex("places", "loc");   // dropped and made again from the data
+$db->withinDistance("places", "loc", 28.97, 41.02, 2000);   // within 2 km, nearest first
+$db->withinBBox("places", "loc", 28.9, 40.9, 29.1, 41.1);
+$db->nearest("places", "loc", 28.97, 41.02, 1);             // [Galata with "_distance" => 711.37] (meters)
+$db->withinPolygon("places", "loc", ["type" => "Polygon", "coordinates" => [[[28.9, 41.0], [29.0, 41.0], [29.0, 41.1], [28.9, 41.1], [28.9, 41.0]]]]);
+$db->validateGeoJSON(["type" => "Point", "coordinates" => [200, 0]]); // ["valid" => false, "error" => "...", "type" => null]
+$db->haversineDistance(28.97, 41.00, 28.98, 41.00);                    // 839.2 (meters)
+$db->dropSpatialIndex("places", "loc");      // ["success" => true, "error" => null], also without an index
 ```
 
-### compact()
-
-Rewrites data files without deleted and superseded records. Keys never change; shards that became
-empty are removed. Usually not needed: compaction also runs automatically.
-
-```php
-$result = $db->compact("users");
-// ["success" => true, "freedSlots" => 150, "totalRecords" => 44850, "sharded" => true, "newShardCount" => 5]
-```
-
-### migrate()
-
-```php
-$result = $db->migrate("users");
-// ["success" => true, "status" => "migrated"]
-```
-
-### Configuration
-
-```php
-$db->isShardingEnabled();  // true/false
-$db->getShardSize();       // 10000
-```
+Records whose field is not valid GeoJSON are not indexed (`indexed` counts the others).
+`createSpatialIndex($db, $field, ["nodeSize" => 16])` sets the R-tree node size (an integer of at least 4, default
+32). `withinDistance()` takes `includeDistance` (bool, default false), `nearest()` takes `maxDistance` (meters, a
+number or `null`) and `includeDistance` (bool, default true).
+Options, rules and the query builder integration: [SPATIAL.md](SPATIAL.md).
 
 ---
 
-## Field Indexing
+## Write buffer
 
-### createFieldIndex()
-
-```php
-$result = $db->createFieldIndex("users", "email");
-// ["success" => true, "indexed" => 150, "values" => 120, "error" => null]  (+ "shards" => N when sharded)
-// Calling it again for an indexed field rebuilds the index
-```
-
-### hasFieldIndex()
+Off by default. With the buffer on, inserts go to a buffer file first and reach the data files in batches;
+buffered records are flushed before the next read or write of the database, so they are always visible.
 
 ```php
-$exists = $db->hasFieldIndex("users", "email");
-// true/false
+$db->enableBuffering(true);
+$db->isBufferingEnabled();          // true
+$db->setBufferSizeLimit(1048576);   // bytes (at least 1 KB)
+$db->setBufferCountLimit(10000);    // records (at least 10)
+$db->setBufferFlushInterval(30);    // seconds, 0: no flush by time
+$db->insert("events", ["type" => "login"]);
+$db->getBufferInfo("events");       // ["enabled" => true, "sizeLimit" => ..., "countLimit" => ..., "flushInterval" => 30,
+                                    //  "buffers" => ["main" => ["exists" => true, "size" => 17, "records" => 1]]]
+$db->flush("events");               // ["success" => true, "flushed" => 1, "error" => null]
+$db->flushAllBuffers();             // ["databases" => 0, "flushed" => 0]
+$db->enableBuffering(false);
 ```
 
-### getFieldIndexes() / rebuildFieldIndex() / getKeysFromFieldIndex()
-
-```php
-$db->getFieldIndexes("users");                       // ["fields" => ["email", "e-mail"], "sharded" => false]
-$db->rebuildFieldIndex("users", "email");            // same result as createFieldIndex()
-$db->getKeysFromFieldIndex("users", "status", "active"); // [0, 4, 7] or null without an index
-```
-
-Field names may contain any characters. Indexes are maintained by every write and give exactly the
-results of a full scan.
-
-### dropFieldIndex()
-
-```php
-$result = $db->dropFieldIndex("users", "email");
-// ["success" => true, ...] or ["success" => false, "error" => "Index does not exist"]
-```
+Buffered records get their keys when they are flushed. A buffered insert is durable once it returns, like a
+direct one (DURABILITY.md).
 
 ---
 
-## Spatial Indexing
+## Durability, integrity and metrics
 
-### createSpatialIndex()
-
-```php
-$result = $db->createSpatialIndex("locations", "coords");
-// ["success" => true, "indexed" => 150, "error" => null]
-// An existing index: ["success" => false, "indexed" => 0, "error" => "Spatial index already exists for field 'coords'"]
-
-// Records with invalid/missing GeoJSON are skipped (not indexed)
-// Always check 'indexed' count to verify
-```
-
-### hasSpatialIndex()
+### getDurability()
 
 ```php
-$exists = $db->hasSpatialIndex("locations", "coords");
-// true/false
+$db->getDurability();
+// ["mode" => "performance",
+//  "platform" => ["os" => "Linux", "durableSupported" => true, "notes" => []],
+//  "lastOperation" => ["op" => "flush", "db" => "events", "outcome" => "committed", "required" => [], "completed" => [], "reason" => null],
+//  "lastSyncError" => null,
+//  "syncs" => ["file" => 7, "dir" => 7, "failed" => 0]]
 ```
 
-### getSpatialIndexes()
+The contract, the outcomes and every field: [DURABILITY.md](DURABILITY.md) §6.
+
+### checkIntegrity()
 
 ```php
-$indexes = $db->getSpatialIndexes("locations");
-// ["coords", "boundary"]
+$db->checkIntegrity("users");
+// ["ok" => true, "database" => "users", "exists" => true, "segments" => 1, "lines" => 3, "records" => 3,
+//  "badLines" => [], "tornTail" => [], "indexMismatches" => [], "bufferedRecords" => 0,
+//  "pendingRecovery" => false, "quarantineFiles" => [], "recoveryLog" => [...]]
 ```
 
-### dropSpatialIndex()
+A full check of the database against its data, read-only: every line is decoded; the key index, the field and
+spatial indexes of each segment and the shard list are compared with the data. Nothing is created, changed, cut or flushed.
+- `badLines`: `[segment, offset, length]` of lines that don't decode;
+- `tornTail`: an unterminated last line (a crashed append), with its segment, offset and length;
+- `indexMismatches`: entries that disagree with the data, and generations other than the active one;
+- `pendingRecovery`: the state record says recovery is due (the next read or write runs it);
+- `quarantineFiles`, `recoveryLog`: the quarantine files and the newest 20 events.
+
+A damaged database and an interrupted generation switch throw `FORMAT_DAMAGED` here too; the next read or write
+repairs what it can prove. `rebuildIndex()` repairs index mismatches.
+
+### getRecoveryLog()
 
 ```php
-$result = $db->dropSpatialIndex("locations", "coords");
-// ["success" => true, "error" => null], also when there was no such index (unlike dropFieldIndex())
+$db->getRecoveryLog("users", 100);  // the newest 100 events, oldest first: [["t" => ..., "action" => ..., ...], ...]
 ```
 
-### rebuildSpatialIndex()
+| Action | What happened |
+|---|---|
+| `cut-tail`, `drop-line`, `drop-buffer` | Bytes removed from a data or buffer file, kept in a verified quarantine file (`quarantine`) |
+| `salvaged`, `skip-line` | A damaged line found while an index was rebuilt: the record at its end was recovered, or the line skipped |
+| `meta-rebuilt` | `shards.json` rebuilt from the shard files |
+| `index-dropped` | An index that couldn't be rebuilt was dropped (queries scan; it is made again later) |
+| `deferred-failed` | Work after a committed write failed; it runs again |
+| `format-repaired` | FORMAT rewritten from the proof of CURRENT and the generation's metadata |
+| `generation-recovered`, `generation-cleanup-failed` | An interrupted generation switch finished, or its obsolete generation couldn't be removed |
+| `restore`, `foreign-restore` | A `restore()`, of the database's own backup or of another one with `force` |
+
+Events never hold record values or key material. Reads never write the log: what a read found is listed
+with `"persisted" => false` until a write session of the same process logs it.
+
+### getMetrics()
 
 ```php
-$result = $db->rebuildSpatialIndex("locations", "coords");
-// Drops and recreates the spatial index from existing data
+$db->getMetrics();          // ["process" => [...]]
+$db->getMetrics("users");   // ["process" => [...], "database" => [...]]
 ```
 
-### withinDistance()
+Counters of the process (index cache hits, misses and evictions, index pages read, checkpoints, compactions,
+lock waits and timeouts, recovery events, durability, the last `checkIntegrity()`) and a database's metadata
+(identity, counters, sizes by class, state). Nothing is scanned or written. Every member:
+[OPERATIONS.md](OPERATIONS.md) §1.
+
+### rebuildIndex() / getIndexInfo()
 
 ```php
-$nearby = $db->withinDistance("locations", "coords", 28.97, 41.00, 5000);
-// Records within 5000 meters (5km)
+$db->rebuildIndex("users");  // ["success" => true, "totalRecords" => 3, "time" => "0.3ms"]
+$db->getIndexInfo("users");  // ["exists" => true, "version" => 1, "created" => ..., "updated" => ..., "totalRecords" => 3,
+                             //  "sharded" => false, "path" => ".../segments/main.kix"]; null when missing
 ```
 
-### withinBBox()
-
-```php
-$inArea = $db->withinBBox("locations", "coords", 28.97, 41.00, 29.00, 41.03);
-```
-
-### nearest()
-
-```php
-$closest = $db->nearest("locations", "coords", 28.97, 41.00, 5);
-// 5 nearest records
-```
-
-### withinPolygon()
-
-```php
-$polygon = ['type' => 'Polygon', 'coordinates' => [...]];
-$inside = $db->withinPolygon("locations", "coords", $polygon);
-```
-
-### validateGeoJSON()
-
-```php
-$result = $db->validateGeoJSON($geometry);
-// ["valid" => true, "error" => null, "type" => "Point"]
-// ["valid" => false, "error" => "Longitude must be between -180 and 180", "type" => null]
-```
+`rebuildIndex()` makes the key indexes again from the data files, and the field and spatial indexes of every
+segment and the global ones. Normal operation never needs it; it is a repair tool.
 
 ---
 
-## Utility Methods
-
-### sort()
+## Backup and restore
 
 ```php
-$sorted = $db->sort($results, "name", "asc");
-$sorted = $db->sort($results, "created_at", "desc");
+$backup = __DIR__ . '/backups/users-' . date('Ymd-His'); // outside dbDir
+$db->backup("users", $backup);
+// ["database" => "users", "dir" => "/var/www/app/backups/users-20261029-142233", "databaseId" => "...", "generation" => 1,
+//  "nextKey" => 4, "records" => 3, "bufferedRecords" => 0, "files" => 6, "bytes" => 1688]
+
+$db->insert("users", ["name" => "after the backup"]);
+$db->restore($backup, "users");
+// ["database" => "users", "generation" => 2, "nextKey" => 5, "records" => 3, "bufferedRecords" => 0,
+//  "target" => "present", "foreign" => false]
 ```
 
-Stable, total order: missing/`null` < booleans < numbers < strings < arrays (reversed for `desc`).
-Returns `[]` for an empty array and `false` for a non-array.
+- `backup($db, $dir)` copies one database as it is at one moment into `$dir`: a directory outside `dbDir` that
+  doesn't exist or is empty (0700, files 0600). `manifest.json` is written last; `store.json` is the store
+  record, usable by `repairStore()`. Writers of the database wait while it runs, other databases don't; key
+  maintenance fails with `MAINTENANCE_BUSY`. The buffer is copied, not flushed: nothing of the database is
+  written.
+- `restore($dir, $db, ['force' => false])` makes the backup the content of the database with one commit: after
+  a crash it opens as it was or as restored. New records get keys above every key the database handed out
+  (`nextKey` 5 above, not 4).
+- A backup of another database is `RESTORE_REFUSED` unless `['force' => true]`, which loads it under this
+  database's identity. An incomplete or damaged backup is always refused; nothing changes.
+- `target`: `present`, `absent` (the database is created), or `damaged` (`restore()` is the way out of
+  `FORMAT_DAMAGED`; the damaged generations are kept for inspection).
 
-### limit()
+Procedures, the directory layout and the rules: [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 
+---
+
+## Key maintenance
+
+Static methods for the store in a directory; each returns `success`, `error` and `code` instead of throwing,
+and `storeManifest`: the complete store record (keep it; `repairStore()` restores it).
+
+<!-- doctest: skip -->
 ```php
-$limited = $db->limit($results, 10);   // [] for an empty array, false for invalid arguments
+noneDB::registerKey($dbDir, $registeredKey, $newKey);
+// ["success" => true, "storeManifest" => [...], "error" => null, "code" => null]
+
+noneDB::migrateKey($dbDir, $oldKey, $newKey);             // ['abort' => true] undoes an interrupted one
+// ["success" => true, "databases" => ["users", "orders"], "storeManifest" => [...], "error" => null, "code" => null]
+
+noneDB::repairStore($dbDir, [$key1, $key2], ['manifest' => '/backups/users/store.json']);
+// ["success" => true, "mode" => "manifest", "complete" => true, "storeManifest" => [...], "error" => null, "code" => null]
 ```
 
-### first() / last()
+- `registerKey()` lets a second key open the store; `$registeredKey` must be registered already.
+- `migrateKey()` rotates every database of `$oldKey` to `$newKey` (their directories are renamed; the contents
+  don't change). Stop the application processes first: a database in use is `MAINTENANCE_BUSY` and nothing is
+  written. An interrupted rotation is finished by running it again.
+- `repairStore()` is only for a store whose two record copies are both invalid. With a manifest (a backup's
+  `store.json`, a `storeManifest`) the record comes back complete; without one only
+  `['confirmManualRebuild' => true]` rebuilds it from the given keys (`complete` false). Every database
+  directory must belong to one of the keys.
+- `['durability' => 'durable']` syncs every step as durable mode does.
+- The options: `migrateKey()` `abort` (bool) and `durability`; `registerKey()` `durability`; `repairStore()`
+  `manifest` (a file path or a store record array), `confirmManualRebuild` (bool) and `durability`.
+
+Order of the steps and what happens after a crash: STORAGE_FORMAT.md §9; procedures: OPERATIONS.md.
+
+---
+
+## Static helpers
 
 ```php
-$first = $db->first("users");
-$last = $db->last("users", ["active" => true]);
-```
-
-### exists()
-
-```php
-$exists = $db->exists("users", ["email" => "test@test.com"]);
-// true/false
-```
-
-### like()
-
-```php
-$results = $db->like("users", "email", "gmail");    // Contains
-$results = $db->like("users", "name", "^John");     // Starts with
-$results = $db->like("users", "name", "son$");      // Ends with
-```
-
-Case-insensitive. Only a leading `^` and a trailing `$` are special; every other character (`.`, `/`,
-`*`, ...) matches itself.
-
-### between()
-
-```php
-$results = $db->between("products", "price", 100, 500);
-$results = $db->between("products", "price", 100, 500, ["active" => true]);
-```
-
-### Static Cache
-
-```php
-noneDB::clearStaticCache();
-noneDB::disableStaticCache();
+noneDB::configExists();       // a .nonedb file was found
+noneDB::getConfigTemplate();  // path of the template file, or null
+noneDB::isDevMode();          // false
+noneDB::clearStaticCache();   // drop the process's caches (tests; long-running workers after maintenance)
+noneDB::disableStaticCache(); // each instance keeps its own caches
 noneDB::enableStaticCache();
 ```
 
-### Buffering and indexes
-
+<!-- doctest: skip -->
 ```php
-$db->enableBuffering(true);          // off by default
-$db->setBufferSizeLimit(1048576);    // bytes (min 1KB)
-$db->setBufferCountLimit(10000);     // records (min 10)
-$db->setBufferFlushInterval(30);     // seconds, 0 = no time-based flush
-$db->flush("users");                // ["success" => true, "flushed" => 12, "error" => null]
-$db->flushAllBuffers();             // ["databases" => 2, "flushed" => 40]
-$db->getBufferInfo("users");        // ["enabled" => true, ..., "buffers" => ["main" => ["exists" => true, "size" => 812, "records" => 12]]]
-
-$db->rebuildIndex("users");         // rebuild the key indexes from the data files (recovery tool)
-$db->getIndexInfo("users");         // ["exists" => true, "totalRecords" => 120, "sharded" => false, ...]
+noneDB::setDevMode(true);     // no config file needed (development only)
+noneDB::clearConfigCache();   // forget the loaded .nonedb (tests)
 ```
 
-### Configuration
+---
+
+## Errors
+
+Invalid input to a CRUD method returns an array with an `error` member (above). Wrong names, settings and
+query operators throw `InvalidArgumentException`. States throw `RuntimeException` with a code:
+
+| Code | Constant | Meaning |
+|---|---|---|
+| 3301 | `OUTCOME_UNKNOWN` | A failure after a commit point, or an undo that failed: read the state again; the next access recovers |
+| 3302 | `LOCK_FAILED` | A lock was not taken within `lockTimeout`, or was lost |
+| 3304 | `UNSUPPORTED_FORMAT` | `dbDir` holds files that are not noneDB 4 objects: migrate them (MIGRATION.md) or move them |
+| 3305 | `FORMAT_DAMAGED` | A store record, FORMAT, CURRENT or generation is damaged and can't be repaired with proof; the data files are kept |
+| 3306 | `UNSUPPORTED_DURABILITY` | Durable mode on a platform that can't provide it (only Linux can) |
+| 3307 | `DURABILITY_FAILED` | A sync durable mode requires failed before the commit point: rolled back |
+| 3308 | `KEY_NOT_REGISTERED` | The configured `secretKey` is not registered for the store |
+| 3309 | `MAINTENANCE_IN_PROGRESS` | Key maintenance or a migration is running or was interrupted (run it again) |
+| 3310 | `RESTORE_REFUSED` | `restore()` refused the backup; nothing changed |
+| 3311 | `MAINTENANCE_BUSY` | Maintenance found a database in use; nothing changed |
+
+`LogicException`: a file of a database written without its exclusive lock (a bug), `update()`/`delete()`/
+`removeFields()` together with `groupBy()`, a replacing operation inside an uncommitted write, serializing an
+instance. Other I/O failures are plain `RuntimeException`s.
 
 ```php
-noneDB::configExists();       // Check config file
-noneDB::getConfigTemplate();  // Get template path
-noneDB::clearConfigCache();   // Clear cached config
-noneDB::setDevMode(true);     // Enable dev mode
-noneDB::isDevMode();          // Check dev mode
+try {
+    $db->restore('/nonexistent/backup', "users");
+} catch (RuntimeException $e) {
+    $e->getCode() === noneDB::RESTORE_REFUSED; // true
+}
 ```
